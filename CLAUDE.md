@@ -67,11 +67,27 @@ jsonschema -i data/sample.yml schema.json
 - 連続するアンダースコアを1つにまとめる
 - 数字で始まる場合は `n_` をプレフィックス
 
-### リテラル値とフィールド参照の区別
+### リテラル値、フィールド参照、モデル参照の区別
 
-リネージの`from`値は以下のように解釈されます:
-- **ドット(`.`)を含む場合**: `Model.field`形式のフィールド参照として扱う ([lineage_to_md.py:65-66](lineage_to_md.py#L65-L66))
-- **ドット(`.`)を含まない場合**: リテラル値(例: `JP`, `now()`)として扱い、専用のリテラルノードを生成 ([lineage_to_md.py:56-63](lineage_to_md.py#L56-L63))
+リネージの`from` / `to`値は以下のように解釈されます:
+
+1. **モデル参照**: `model_types`に登録されているモデル名
+   - 例: `HttpRequest`, `UserDomain.AddressValueObject`
+   - Mermaidのサブグラフ全体を指す
+   - 用途: モデル全体からプロパティへのマッピング
+
+2. **フィールド参照**: `Model.field`形式で`field_node_ids`に存在
+   - 例: `HttpRequest.amount`, `UserDomain.id`
+   - 特定のプロパティノードを指す
+
+3. **リテラル値**: 上記以外
+   - 例: `JP`, `now()`, `v1.0`
+   - 専用のリテラルノードを動的生成
+
+**判定順序** ([lineage_to_md.py:376-379](lineage_to_md.py#L376-L379), [lineage_to_md.py:402-411](lineage_to_md.py#L402-L411)):
+1. モデル参照チェック(優先)
+2. フィールド参照チェック
+3. リテラル値として扱う
 
 ### スキーマ仕様 ([schema.json](schema.json))
 
@@ -147,6 +163,69 @@ end
 ### サンプル
 
 実際の使用例は [data/event-driven.yml](data/event-driven.yml) を参照してください。
+
+## モデル全体参照 (v4.0+)
+
+### 概要
+
+モデル全体(サブグラフ)から特定のプロパティへ、またはプロパティからモデル全体へ矢印を引くことができます。
+
+### 使用例
+
+```yaml
+models:
+  - name: HttpRequest
+    type: program
+    props: [zipCode, prefecture, city, street, building]
+
+  - name: UserDomain
+    type: program
+    props: [id, name]
+    children:
+      - name: AddressValueObject
+        type: program
+        props: [zipCode, prefecture, city, street, building]
+
+lineage:
+  # モデル全体 → プロパティ
+  - from: HttpRequest
+    to: UserDomain.AddressValueObject.zipCode
+    transform: "extract from request"
+
+  # 階層モデル → プロパティ
+  - from: UserDomain.AddressValueObject
+    to: UserDomain.id
+    transform: "populate domain"
+```
+
+### Mermaid出力
+
+```mermaid
+graph LR
+  subgraph HttpRequest[HttpRequest]
+    HttpRequest_zipCode["zipCode"]:::property
+  end
+
+  subgraph UserDomain[UserDomain]
+    UserDomain_id["id"]:::property
+    subgraph UserDomain_AddressValueObject[AddressValueObject]
+      UserDomain_AddressValueObject_zipCode["zipCode"]:::property
+    end
+  end
+
+  HttpRequest -->|"extract from request"| UserDomain_AddressValueObject_zipCode
+  UserDomain_AddressValueObject -->|"populate domain"| UserDomain_id
+```
+
+### ユースケース
+
+- **モデル全体からValueObjectへの変換**: HTTPリクエストの複数フィールドをValueObjectにマッピング
+- **ValueObjectからDomainへの設定**: 作成したValueObjectをドメインモデルに組み込む
+- **一括変換の表現**: 複数プロパティをまとめて扱う処理の可視化
+
+### サンプル
+
+実際の使用例は [data/model_to_field_example.yml](data/model_to_field_example.yml) を参照してください。
 
 ## CSVからのモデル読み込み (v3.0+)
 

@@ -1,0 +1,6 @@
+論理名,物理名,データ型,サイズ,キー,説明
+ID,id,VARCHAR,36,,トランザクションID
+ユーザーID,userId,VARCHAR,36,,ユーザー識別子
+作成日時,createdAt,TIMESTAMP,,,作成タイムスタンプ
+金額情報,money,OBJECT,,,Moneyバリューオブジェクト
+メタデータ,metadata,OBJECT,,,Metadataバリューオブジェクト

@@ -335,11 +335,11 @@ def main(
             # Add CSV models to the list
             models.extend(csv_models.values())
 
-            # Warn about models that couldn't be found
+            # Warn about models that couldn't be found (likely literals)
             found_csv_models = set(csv_models.keys())
             still_missing = missing_models - found_csv_models
             if still_missing:
-                print(f"Warning: The following models are referenced in lineage but not found in YAML or CSV: {', '.join(sorted(still_missing))}", file=sys.stderr)
+                print(f"Info: The following values will be treated as literals (not found as models in YAML or CSV): {', '.join(sorted(still_missing))}", file=sys.stderr)
 
     # Use recursive parser to handle nested models
     model_types, field_nodes_by_model, field_node_ids, model_hierarchy = parse_models_recursive(models)
@@ -373,21 +373,64 @@ def main(
     def is_model_field(token: str) -> bool:
         return "." in token and token in field_node_ids
 
+    def is_model_reference(token: str) -> bool:
+        """Check if token is a model reference (can include dots for nested models)"""
+        # Check if it's a known model path (including nested like Parent.Child)
+        return token in model_types
+
+    # Track which model references need style overrides
+    model_ref_styles = {}
+
     for e in lineage:
         to_ref = e.get("to")
         if not to_ref: continue
-        t_model, t_field = parse_field(to_ref)
-        t_id = field_node_ids.get(f"{t_model}.{t_field}")
+
+        # Determine target: field reference or model reference
+        if "." in to_ref:
+            # Field reference: Model.field
+            t_model, t_field = parse_field(to_ref)
+            t_id = field_node_ids.get(f"{t_model}.{t_field}")
+        else:
+            # Model reference: use subgraph ID
+            if to_ref not in model_types:
+                print(f"Warning: Unknown model reference '{to_ref}' in lineage", file=sys.stderr)
+                continue
+            t_id = slug(to_ref.replace(".", "_"))
+
         srcs = e.get("from")
         if isinstance(srcs, str): srcs = [srcs]
         transform = e.get("transform", "")
+
         for i, src in enumerate(srcs):
-            s_id = field_node_ids[src] if is_model_field(src) else ensure_literal(src)
+            # Determine source: model reference, field reference, or literal
+            # Check model reference first (before field) to handle nested models correctly
+            if is_model_reference(src):
+                # Model reference: use subgraph ID as node (creates implicit node)
+                s_id = slug(src.replace(".", "_"))
+                # Track this model reference for style override
+                if src not in model_ref_styles:
+                    model_ref_styles[src] = model_types[src]
+            elif is_model_field(src):
+                s_id = field_node_ids[src]
+            else:
+                # Literal value
+                s_id = ensure_literal(src)
+
             label = transform if i == 0 and transform else ""
             if label:
                 lines.append(f'  {s_id} -->|"{label}"| {t_id}')
             else:
                 lines.append(f'  {s_id} --> {t_id}')
+
+    # Add style directives for model references to fix color issue
+    if model_ref_styles:
+        lines.append("")
+        for model_ref, model_type in model_ref_styles.items():
+            node_id = slug(model_ref.replace(".", "_"))
+            if model_type == "program":
+                lines.append(f'  style {node_id} fill:#E3F2FD,stroke:#1565C0,stroke-width:2px')
+            else:  # datastore
+                lines.append(f'  style {node_id} fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px')
 
     lines.append("```")
     Path(output_md).write_text("\n".join(lines), encoding="utf-8")
@@ -418,16 +461,16 @@ Examples:
     parser.add_argument("input_yaml", help="Path to input YAML file")
     parser.add_argument("output_md", help="Path to output Markdown file")
     parser.add_argument(
-        "--program-model-dirs",
-        nargs="*",
-        default=[],
-        help="Directories containing program model CSV files"
+        "--program-model-dirs", "-p",
+        action="append",
+        dest="program_model_dirs",
+        help="Directory containing program model CSV files (can be specified multiple times)"
     )
     parser.add_argument(
-        "--datastore-model-dirs",
-        nargs="*",
-        default=[],
-        help="Directories containing datastore model CSV files"
+        "--datastore-model-dirs", "-d",
+        action="append",
+        dest="datastore_model_dirs",
+        help="Directory containing datastore model CSV files (can be specified multiple times)"
     )
 
     args = parser.parse_args()
@@ -435,6 +478,6 @@ Examples:
     main(
         args.input_yaml,
         args.output_md,
-        program_model_dirs=args.program_model_dirs if args.program_model_dirs else None,
-        datastore_model_dirs=args.datastore_model_dirs if args.datastore_model_dirs else None
+        program_model_dirs=args.program_model_dirs or [],
+        datastore_model_dirs=args.datastore_model_dirs or []
     )
