@@ -26,6 +26,9 @@ pip install PyYAML
 ### リネージ変換の実行
 ```bash
 python lineage_to_md.py data/sample.yml data/output/output.md
+
+# lint
+md-mermaid-lint data/output/output.md                                    
 ```
 
 ### スキーマバリデーション（オプション）
@@ -78,6 +81,72 @@ JSON Schemaは以下を定義:
 - `lineage` - エッジ定義の配列(from, toが必須、transformはオプション)
 - `from`は文字列または配列が可能
 - `to`は必ず`Model.field`形式のパターンを強制
+
+## 階層構造のサポート
+
+### 概要
+
+モデルを入れ子にして階層構造を表現できます。DomainモデルにValueObjectを含める場合などに使用します。
+
+### スキーマ定義
+
+[schema.json](schema.json) の `models[].children` プロパティを使用:
+
+```yaml
+models:
+  - name: TransactionDomain
+    type: program
+    props: [id, userId, createdAt]
+    children:
+      - name: MoneyValueObject
+        type: program
+        props: [amount, currency]
+      - name: MetadataValueObject
+        type: program
+        props: [source, version]
+```
+
+### フィールド参照記法
+
+階層構造のフィールドは `Parent.Child.field` 形式で参照:
+
+```yaml
+lineage:
+  - from: HttpRequest.amount
+    to: TransactionDomain.MoneyValueObject.amount
+  - from: JP
+    to: TransactionDomain.MoneyValueObject.currency
+```
+
+### Mermaid出力
+
+入れ子サブグラフとして出力されます:
+
+```mermaid
+subgraph TransactionDomain[TransactionDomain]
+  TransactionDomain_id["id"]:::property
+
+  subgraph TransactionDomain_MoneyValueObject[MoneyValueObject]
+    TransactionDomain_MoneyValueObject_amount["amount"]:::property
+    TransactionDomain_MoneyValueObject_currency["currency"]:::property
+  end
+end
+```
+
+### 実装詳細
+
+- **再帰的パース** ([lineage_to_md.py:33-91](lineage_to_md.py#L33-L91))
+  - `parse_models_recursive()` が親子関係を辿ってモデル階層を構築
+  - 親のプレフィックスを子に伝播 (`Parent.Child` 形式)
+  - フィールドIDを `{parent}_{child}_{field}` で生成
+
+- **入れ子サブグラフ生成** ([lineage_to_md.py:93-140](lineage_to_md.py#L93-L140))
+  - `generate_subgraph()` がインデントレベルを管理
+  - 子モデルを親サブグラフ内に再帰的に配置
+
+### サンプル
+
+実際の使用例は [data/event-driven.yml](data/event-driven.yml) を参照してください。
 
 ## 実装時の注意点
 

@@ -15,66 +15,82 @@ graph LR
   classDef property fill:#F5F5F5,stroke:#9E9E9E,stroke-width:1px,color:#424242;
   classDef literal fill:#FFF3E0,stroke:#EF6C00,stroke-width:1px,color:#BF360C;
 
-  subgraph HttpRequest[HttpRequest]
-    HttpRequest_request_id["request_id"]:::property
-    HttpRequest_user_id["user_id"]:::property
-    HttpRequest_amount["amount"]:::property
-    HttpRequest_timestamp["timestamp"]:::property
-  end
-  class HttpRequest program_bg
+    subgraph HttpRequest[HttpRequest]
+      HttpRequest_request_id["request_id"]:::property
+      HttpRequest_user_id["user_id"]:::property
+      HttpRequest_amount["amount"]:::property
+      HttpRequest_timestamp["timestamp"]:::property
+    end
+    class HttpRequest program_bg
 
-  subgraph TransactionDomain[TransactionDomain]
-    TransactionDomain_id["id"]:::property
-    TransactionDomain_userId["userId"]:::property
-    TransactionDomain_value["value"]:::property
-    TransactionDomain_createdAt["createdAt"]:::property
-  end
-  class TransactionDomain program_bg
+    subgraph TransactionDomain[TransactionDomain]
+      TransactionDomain_id["id"]:::property
+      TransactionDomain_userId["userId"]:::property
+      TransactionDomain_createdAt["createdAt"]:::property
 
-  subgraph TransactionEntity[TransactionEntity]
-    TransactionEntity_transactionId["transactionId"]:::property
-    TransactionEntity_userId["userId"]:::property
-    TransactionEntity_amount["amount"]:::property
-    TransactionEntity_createdAt["createdAt"]:::property
-  end
-  class TransactionEntity program_bg
+      subgraph TransactionDomain_MoneyValueObject[MoneyValueObject]
+        TransactionDomain_MoneyValueObject_amount["amount"]:::property
+        TransactionDomain_MoneyValueObject_currency["currency"]:::property
+      end
+      class TransactionDomain_MoneyValueObject program_bg
+      subgraph TransactionDomain_MetadataValueObject[MetadataValueObject]
+        TransactionDomain_MetadataValueObject_source["source"]:::property
+        TransactionDomain_MetadataValueObject_version["version"]:::property
+      end
+      class TransactionDomain_MetadataValueObject program_bg
+    end
+    class TransactionDomain program_bg
 
-  subgraph transactions[transactions]
-    transactions_transaction_id["transaction_id"]:::property
-    transactions_user_id["user_id"]:::property
-    transactions_amount["amount"]:::property
-    transactions_created_at["created_at"]:::property
-  end
-  class transactions datastore_bg
+    subgraph TransactionEntity[TransactionEntity]
+      TransactionEntity_transactionId["transactionId"]:::property
+      TransactionEntity_userId["userId"]:::property
+      TransactionEntity_amount["amount"]:::property
+      TransactionEntity_createdAt["createdAt"]:::property
+    end
+    class TransactionEntity program_bg
 
-  subgraph KafkaTransactionEvent[KafkaTransactionEvent]
-    KafkaTransactionEvent_event_id["event_id"]:::property
-    KafkaTransactionEvent_transaction_id["transaction_id"]:::property
-    KafkaTransactionEvent_amount["amount"]:::property
-  end
-  class KafkaTransactionEvent program_bg
+    subgraph transactions[transactions]
+      transactions_transaction_id["transaction_id"]:::property
+      transactions_user_id["user_id"]:::property
+      transactions_amount["amount"]:::property
+      transactions_created_at["created_at"]:::property
+    end
+    class transactions datastore_bg
 
-  subgraph transaction_history[transaction_history]
-    transaction_history_user_id["user_id"]:::property
-    transaction_history_transaction_id["transaction_id"]:::property
-    transaction_history_amount["amount"]:::property
-  end
-  class transaction_history datastore_bg
+    subgraph KafkaTransactionEvent[KafkaTransactionEvent]
+      KafkaTransactionEvent_event_id["event_id"]:::property
+      KafkaTransactionEvent_transaction_id["transaction_id"]:::property
+      KafkaTransactionEvent_amount["amount"]:::property
+    end
+    class KafkaTransactionEvent program_bg
 
-  subgraph user_balance_snapshot[user_balance_snapshot]
-    user_balance_snapshot_user_id["user_id"]:::property
-    user_balance_snapshot_total_amount["total_amount"]:::property
-    user_balance_snapshot_last_updated["last_updated"]:::property
-  end
-  class user_balance_snapshot datastore_bg
+    subgraph transaction_history[transaction_history]
+      transaction_history_user_id["user_id"]:::property
+      transaction_history_transaction_id["transaction_id"]:::property
+      transaction_history_amount["amount"]:::property
+    end
+    class transaction_history datastore_bg
+
+    subgraph user_balance_snapshot[user_balance_snapshot]
+      user_balance_snapshot_user_id["user_id"]:::property
+      user_balance_snapshot_total_amount["total_amount"]:::property
+      user_balance_snapshot_last_updated["last_updated"]:::property
+    end
+    class user_balance_snapshot datastore_bg
 
   HttpRequest_request_id --> TransactionDomain_id
   HttpRequest_user_id --> TransactionDomain_userId
-  HttpRequest_amount --> TransactionDomain_value
+  HttpRequest_amount --> TransactionDomain_MoneyValueObject_amount
+  lit_JPY["JPY"]:::literal
+  lit_JPY --> TransactionDomain_MoneyValueObject_currency
   HttpRequest_timestamp -->|"parse as timestamp"| TransactionDomain_createdAt
+  lit_api["api"]:::literal
+  lit_api --> TransactionDomain_MetadataValueObject_source
+  lit_v1_0["v1.0"]:::literal
+  lit_v1_0 --> TransactionDomain_MetadataValueObject_version
   TransactionDomain_id --> TransactionEntity_transactionId
   TransactionDomain_userId --> TransactionEntity_userId
-  TransactionDomain_value --> TransactionEntity_amount
+  TransactionDomain_MoneyValueObject_amount --> TransactionEntity_amount
   TransactionDomain_createdAt --> TransactionEntity_createdAt
   TransactionEntity_transactionId --> transactions_transaction_id
   TransactionEntity_userId --> transactions_user_id
@@ -82,7 +98,7 @@ graph LR
   TransactionEntity_createdAt --> transactions_created_at
   TransactionDomain_id --> KafkaTransactionEvent_transaction_id
   TransactionDomain_id -->|"generate UUID from transaction_id"| KafkaTransactionEvent_event_id
-  TransactionDomain_value --> KafkaTransactionEvent_amount
+  TransactionDomain_MoneyValueObject_amount --> KafkaTransactionEvent_amount
   KafkaTransactionEvent_transaction_id -->|"lookup from transactions"| transaction_history_transaction_id
   transactions_user_id -->|"join by transaction_id"| transaction_history_user_id
   transactions_amount -->|"join by transaction_id"| transaction_history_amount
@@ -93,7 +109,6 @@ graph LR
   lit_now -->|"current timestamp"| user_balance_snapshot_last_updated
 ```
 
----
 
 ## 🚀 Features
 
@@ -101,9 +116,9 @@ graph LR
 |------|------|
 | **📜 YAML定義 → Mermaid変換** | 各モデルとカラム、変換関係を記述したYAMLをMarkdownに変換。 |
 | **⚡ シンプル構文** | `from`, `to`, `transform` の3要素だけで定義可能。 |
+| **🏗️ 階層モデル対応** | モデルを入れ子にして階層構造を表現可能(例: Domain → ValueObject)。 |
 | **🧱 JSON Schema 準拠** | `schema.json` によるバリデーション可能。 |
 
----
 
 ## 📂 Repository Structure
 
@@ -121,7 +136,6 @@ lineage-to-graph/
 └── lineage_to_md.py        # YAML → Mermaid Markdown 変換スクリプト
 ```
 
----
 
 ## 🧱 Schema Specification
 
@@ -185,23 +199,22 @@ python lineage_to_md.py data/etl-pipeline.yml data/output/etl-pipeline.md
 
 **ユースケース**: データレイク/データウェアハウスの実践的なパイプライン
 
-### 5. **event-driven.yml** - イベント駆動アーキテクチャ
+### 5. **event-driven.yml** - イベント駆動アーキテクチャ + 階層モデル
 
-HTTPリクエスト → Domain → RDB → Kafka → サブスクライブ → 集計更新。
+HTTPリクエスト → Domain(ValueObject含む) → RDB → Kafka → サブスクライブ → 集計更新。
 
 ```bash
 python lineage_to_md.py data/event-driven.yml data/output/event-driven.md
 ```
 
-**ユースケース**: Kafkaを使ったCQRS/イベントソーシングパターン
+**ユースケース**: Kafkaを使ったCQRS/イベントソーシングパターン、DDDのValueObject表現
 
----
 
 ## 🧪 Schema Validation
 
-YAMLの妥当性をチェックする場合：
+YAMLの妥当性をチェックする場合:
 
 ```bash
 pip install jsonschema
-jsonschema -i sample.yml schema.json
+jsonschema -i data/sample.yml schema.json
 ```

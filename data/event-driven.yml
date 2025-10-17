@@ -10,10 +10,17 @@ models:
     type: program
     props: [request_id, user_id, amount, timestamp]
 
-  # Layer 2: Domain Object
+  # Layer 2: Domain Object (with nested Value Objects)
   - name: TransactionDomain
     type: program
-    props: [id, userId, value, createdAt]
+    props: [id, userId, createdAt]
+    children:
+      - name: MoneyValueObject
+        type: program
+        props: [amount, currency]
+      - name: MetadataValueObject
+        type: program
+        props: [source, version]
 
   # Layer 3: Entity (ORM Entity Object)
   - name: TransactionEntity
@@ -44,13 +51,16 @@ lineage:
   # HTTP Request → Domain Object
   - { from: HttpRequest.request_id, to: TransactionDomain.id }
   - { from: HttpRequest.user_id, to: TransactionDomain.userId }
-  - { from: HttpRequest.amount, to: TransactionDomain.value }
+  - { from: HttpRequest.amount, to: TransactionDomain.MoneyValueObject.amount }
+  - { from: JPY, to: TransactionDomain.MoneyValueObject.currency }
   - { from: HttpRequest.timestamp, to: TransactionDomain.createdAt, transform: "parse as timestamp" }
+  - { from: api, to: TransactionDomain.MetadataValueObject.source }
+  - { from: v1.0, to: TransactionDomain.MetadataValueObject.version }
 
   # Domain Object → Entity Object
   - { from: TransactionDomain.id, to: TransactionEntity.transactionId }
   - { from: TransactionDomain.userId, to: TransactionEntity.userId }
-  - { from: TransactionDomain.value, to: TransactionEntity.amount }
+  - { from: TransactionDomain.MoneyValueObject.amount, to: TransactionEntity.amount }
   - { from: TransactionDomain.createdAt, to: TransactionEntity.createdAt }
 
   # Entity Object → RDB Table (ORM save)
@@ -62,7 +72,7 @@ lineage:
   # Domain Object → Kafka Event (パブリッシュ)
   - { from: TransactionDomain.id, to: KafkaTransactionEvent.transaction_id }
   - { from: TransactionDomain.id, to: KafkaTransactionEvent.event_id, transform: "generate UUID from transaction_id" }
-  - { from: TransactionDomain.value, to: KafkaTransactionEvent.amount }
+  - { from: TransactionDomain.MoneyValueObject.amount, to: KafkaTransactionEvent.amount }
 
   # Kafka Event → History Query (サブスクライブ後のDB検索)
   - { from: KafkaTransactionEvent.transaction_id, to: transaction_history.transaction_id, transform: "lookup from transactions" }

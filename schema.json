@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.com/lineage-v1.schema.json",
-  "title": "Column Lineage Spec (v3)",
+  "title": "Column Lineage Spec (v1)",
   "description": "Minimal column-level lineage spec for Markdown/Mermaid generation. Uses subgraph=model name; fields are nodes. Literals are plain strings in `from` (no dot).",
   "type": "object",
   "additionalProperties": false,
@@ -16,31 +16,7 @@
       "type": "array",
       "minItems": 1,
       "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["name", "type", "props"],
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "description": "Model/type/table name. Used as Mermaid subgraph title."
-          },
-          "type": {
-            "type": "string",
-            "enum": ["program", "datastore"],
-            "description": "Category for coloring/styling."
-          },
-          "props": {
-            "type": "array",
-            "minItems": 1,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "minLength": 1
-            },
-            "description": "Field/property names belonging to this model."
-          }
-        }
+        "$ref": "#/$defs/modelDefinition"
       },
       "description": "Set of source/intermediate/target models with their fields."
     },
@@ -85,6 +61,42 @@
       "description": "Column-level edges."
     }
   },
+  "$defs": {
+    "modelDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "props"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model/type/table name. Used as Mermaid subgraph title."
+        },
+        "type": {
+          "type": "string",
+          "enum": ["program", "datastore"],
+          "description": "Category for coloring/styling."
+        },
+        "props": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Field/property names belonging to this model."
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modelDefinition"
+          },
+          "description": "Optional nested child models (e.g., Value Objects, nested entities)."
+        }
+      }
+    }
+  },
   "examples": [
     {
       "spec": "lineage-v1",
@@ -100,6 +112,28 @@
         { "from": "JP", "to": "user_table.country" },
         { "from": "now()", "to": "user_table.load_timestamp", "transform": "as load_timestamp" },
         { "from": ["sales.amount"], "to": "daily_summary.total_amount", "transform": "sum group_by: customer_id, order_date filter: status in ['PAID','SHIPPED']" }
+      ]
+    },
+    {
+      "spec": "lineage-v1",
+      "models": [
+        {
+          "name": "TransactionDomain",
+          "type": "program",
+          "props": ["id", "userId", "createdAt"],
+          "children": [
+            {
+              "name": "MoneyValueObject",
+              "type": "program",
+              "props": ["amount", "currency"]
+            }
+          ]
+        },
+        { "name": "HttpRequest", "type": "program", "props": ["request_id", "amount"] }
+      ],
+      "lineage": [
+        { "from": "HttpRequest.request_id", "to": "TransactionDomain.id" },
+        { "from": "HttpRequest.amount", "to": "TransactionDomain.MoneyValueObject.amount" }
       ]
     }
   ]
