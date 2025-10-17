@@ -1,0 +1,5 @@
+論理名,物理名,データ型,サイズ,キー,説明
+トランザクションID,transaction_id,VARCHAR,256,PK,
+ユーザーID,user_id,VARCHAR,256,,
+金額,amount,NUMBER,10,,
+作成日時,created_at,DATE,-,,

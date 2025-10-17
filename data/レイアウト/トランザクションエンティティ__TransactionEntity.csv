@@ -1,0 +1,5 @@
+論理名,物理名,データ型
+トランザクションID,transactionId,String
+ユーザーID,userId,String
+金額,amount,String
+作成日時,createdAt,String

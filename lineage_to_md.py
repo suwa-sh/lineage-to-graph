@@ -1,10 +1,12 @@
 import sys
 import yaml
 import re
+import csv
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Set
 
 def slug(s: str) -> str:
+    """Generate safe Mermaid identifier from string."""
     s = str(s).replace("::", "_")
     s = re.sub(r"[^A-Za-z0-9_]+", "_", s)
     s = re.sub(r"_+", "_", s).strip("_")
@@ -13,6 +15,155 @@ def slug(s: str) -> str:
     if re.match(r"^[0-9]", s):
         s = "n_" + s
     return s
+
+def load_model_from_csv(csv_path: str, model_type: str) -> Optional[Dict[str, Any]]:
+    """Load model definition from CSV file.
+
+    CSV format:
+        論理名,物理名,データ型,サイズ,キー,説明
+        (Header row is skipped, we extract from '物理名' column)
+
+    Filename format:
+        論理名__ModelName.csv
+        └─────┘  └───┬───┘
+        logical   physical name (used as model name)
+
+    Args:
+        csv_path: Path to CSV file
+        model_type: 'program' or 'datastore'
+
+    Returns:
+        Model definition dict {name, type, props} or None if failed
+    """
+    try:
+        # Extract model name from filename: *__ModelName.csv
+        filename = Path(csv_path).stem
+        if "__" not in filename:
+            print(f"Warning: CSV filename '{csv_path}' does not match pattern '論理名__ModelName.csv'", file=sys.stderr)
+            return None
+
+        model_name = filename.split("__")[-1]
+
+        # Read CSV file
+        props = []
+        encodings = ['utf-8', 'cp932', 'shift_jis']
+        content = None
+
+        for encoding in encodings:
+            try:
+                with open(csv_path, 'r', encoding=encoding) as f:
+                    content = f.read()
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+
+        if content is None:
+            print(f"Error: Could not decode CSV file '{csv_path}' with any supported encoding", file=sys.stderr)
+            return None
+
+        # Parse CSV
+        reader = csv.DictReader(content.splitlines())
+        for row in reader:
+            physical_name = row.get('物理名', '').strip()
+            if physical_name:
+                props.append(physical_name)
+
+        if not props:
+            print(f"Warning: No properties found in CSV file '{csv_path}'", file=sys.stderr)
+            return None
+
+        return {
+            'name': model_name,
+            'type': model_type,
+            'props': props
+        }
+
+    except Exception as e:
+        print(f"Error loading CSV '{csv_path}': {e}", file=sys.stderr)
+        return None
+
+def extract_referenced_models(lineage: List[Dict[str, Any]]) -> Set[str]:
+    """Extract all model names referenced in lineage definitions.
+
+    Args:
+        lineage: List of lineage entries with 'from' and 'to' fields
+
+    Returns:
+        Set of model names (top-level only, e.g., 'Parent' from 'Parent.Child.field')
+    """
+    models = set()
+
+    for entry in lineage:
+        # Extract from 'from' field (can be string or list)
+        from_val = entry.get('from')
+        if isinstance(from_val, str):
+            from_list = [from_val]
+        elif isinstance(from_val, list):
+            from_list = from_val
+        else:
+            from_list = []
+
+        for ref in from_list:
+            if '.' in ref:  # Field reference like 'Model.field'
+                model_name = ref.split('.')[0]
+                models.add(model_name)
+
+        # Extract from 'to' field
+        to_val = entry.get('to', '')
+        if '.' in to_val:
+            model_name = to_val.split('.')[0]
+            models.add(model_name)
+
+    return models
+
+def find_model_csvs(
+    program_dirs: List[str],
+    datastore_dirs: List[str],
+    required_models: Set[str]
+) -> Dict[str, Dict[str, Any]]:
+    """Find and load CSV model definitions from specified directories.
+
+    Args:
+        program_dirs: List of directories containing program model CSVs
+        datastore_dirs: List of directories containing datastore model CSVs
+        required_models: Set of model names that are referenced in lineage
+
+    Returns:
+        Dict mapping model names to model definitions {name, type, props}
+    """
+    models = {}
+
+    # Search program model directories
+    for dir_path in program_dirs:
+        path = Path(dir_path)
+        if not path.exists():
+            print(f"Warning: Program model directory '{dir_path}' does not exist", file=sys.stderr)
+            continue
+
+        for csv_file in path.rglob("*.csv"):
+            model_def = load_model_from_csv(str(csv_file), 'program')
+            if model_def and model_def['name'] in required_models:
+                if model_def['name'] in models:
+                    print(f"Warning: Duplicate model '{model_def['name']}' found in '{csv_file}'", file=sys.stderr)
+                else:
+                    models[model_def['name']] = model_def
+
+    # Search datastore model directories
+    for dir_path in datastore_dirs:
+        path = Path(dir_path)
+        if not path.exists():
+            print(f"Warning: Datastore model directory '{dir_path}' does not exist", file=sys.stderr)
+            continue
+
+        for csv_file in path.rglob("*.csv"):
+            model_def = load_model_from_csv(str(csv_file), 'datastore')
+            if model_def and model_def['name'] in required_models:
+                if model_def['name'] in models:
+                    print(f"Warning: Duplicate model '{model_def['name']}' found in '{csv_file}'", file=sys.stderr)
+                else:
+                    models[model_def['name']] = model_def
+
+    return models
 
 def parse_field(ref: str) -> Tuple[str, str]:
     """Parse field reference into model path and field name.
@@ -139,17 +290,56 @@ def generate_subgraph(
 
     return lines
 
-def main(input_yaml: str, output_md: str) -> None:
+def main(
+    input_yaml: str,
+    output_md: str,
+    program_model_dirs: Optional[List[str]] = None,
+    datastore_model_dirs: Optional[List[str]] = None
+) -> None:
     """Convert YAML lineage definition to Mermaid Markdown diagram.
 
     Args:
         input_yaml: Path to input YAML file
         output_md: Path to output Markdown file
+        program_model_dirs: List of directories containing program model CSVs
+        datastore_model_dirs: List of directories containing datastore model CSVs
     """
     data = yaml.safe_load(Path(input_yaml).read_text(encoding="utf-8"))
 
-    models = data.get("models", [])
+    yaml_models = data.get("models", [])
     lineage = data.get("lineage", [])
+
+    # Merge YAML models with CSV models if directories are specified
+    models = list(yaml_models)  # Start with YAML-defined models
+
+    if program_model_dirs or datastore_model_dirs:
+        # Extract model names already defined in YAML
+        yaml_model_names = set()
+        for m in yaml_models:
+            yaml_model_names.add(m['name'])
+
+        # Extract all referenced models from lineage
+        referenced_models = extract_referenced_models(lineage)
+
+        # Find models that need to be loaded from CSV
+        missing_models = referenced_models - yaml_model_names
+
+        if missing_models:
+            # Load missing models from CSV directories
+            csv_models = find_model_csvs(
+                program_model_dirs or [],
+                datastore_model_dirs or [],
+                missing_models
+            )
+
+            # Add CSV models to the list
+            models.extend(csv_models.values())
+
+            # Warn about models that couldn't be found
+            found_csv_models = set(csv_models.keys())
+            still_missing = missing_models - found_csv_models
+            if still_missing:
+                print(f"Warning: The following models are referenced in lineage but not found in YAML or CSV: {', '.join(sorted(still_missing))}", file=sys.stderr)
 
     # Use recursive parser to handle nested models
     model_types, field_nodes_by_model, field_node_ids, model_hierarchy = parse_models_recursive(models)
@@ -203,7 +393,48 @@ def main(input_yaml: str, output_md: str) -> None:
     Path(output_md).write_text("\n".join(lines), encoding="utf-8")
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python lineage_to_mermaid_v3.py <input.yaml> <output.md>")
-        sys.exit(1)
-    main(sys.argv[1], sys.argv[2])
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Convert YAML lineage definition to Mermaid Markdown diagram",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Full YAML mode (traditional)
+  python lineage_to_md.py data/sample.yml output.md
+
+  # CSV mode
+  python lineage_to_md.py lineage.yml output.md \\
+    --program-model-dirs data/レイアウト \\
+    --datastore-model-dirs data/テーブル定義
+
+  # Mixed mode (YAML + CSV)
+  python lineage_to_md.py lineage.yml output.md \\
+    --program-model-dirs data/レイアウト \\
+    --datastore-model-dirs data/テーブル定義
+"""
+    )
+
+    parser.add_argument("input_yaml", help="Path to input YAML file")
+    parser.add_argument("output_md", help="Path to output Markdown file")
+    parser.add_argument(
+        "--program-model-dirs",
+        nargs="*",
+        default=[],
+        help="Directories containing program model CSV files"
+    )
+    parser.add_argument(
+        "--datastore-model-dirs",
+        nargs="*",
+        default=[],
+        help="Directories containing datastore model CSV files"
+    )
+
+    args = parser.parse_args()
+
+    main(
+        args.input_yaml,
+        args.output_md,
+        program_model_dirs=args.program_model_dirs if args.program_model_dirs else None,
+        datastore_model_dirs=args.datastore_model_dirs if args.datastore_model_dirs else None
+    )

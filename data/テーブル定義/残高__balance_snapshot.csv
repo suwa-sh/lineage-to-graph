@@ -1,0 +1,4 @@
+論理名,物理名,データ型,サイズ,キー,説明
+ユーザーID,user_id,VARCHAR,256,PK,
+残高,total_amount,NUMBER,10,,
+最終更新日時,last_updated,DATE,-,,

@@ -1,0 +1,5 @@
+論理名,物理名,データ型
+リクエストID,request_id,String
+ユーザーID,user_id,String
+金額,amount,String
+タイムスタンプ,timestamp,String

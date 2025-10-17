@@ -148,6 +148,115 @@ end
 
 実際の使用例は [data/event-driven.yml](data/event-driven.yml) を参照してください。
 
+## CSVからのモデル読み込み (v3.0+)
+
+### 概要
+
+モデル定義をCSVファイルから読み込むことができます。大規模なデータモデルをCSVで管理しつつ、リネージ定義はYAMLで簡潔に記述できます。
+
+### CSV形式
+
+**ファイル名規則**: `論理名__物理名.csv`
+- 例: `HTTPリクエスト__HttpRequest.csv`
+- 例: `残高__balance_snapshot.csv`
+
+**CSV列定義**:
+```csv
+論理名,物理名,データ型,サイズ,キー,説明
+```
+- **program系**: 最初の3列(論理名,物理名,データ型)
+- **datastore系**: 全6列
+
+**使用される列**:
+- `物理名`: propsリストの要素として使用
+- その他の列: 現在は未使用(将来的にメタデータとして活用可能)
+
+### コマンドライン引数
+
+```bash
+python lineage_to_md.py <input.yaml> <output.md> \
+  --program-model-dirs <dir1> <dir2> ... \
+  --datastore-model-dirs <dir1> <dir2> ...
+```
+
+**引数**:
+- `--program-model-dirs`: programタイプのモデルCSVが格納されたディレクトリ(複数指定可)
+- `--datastore-model-dirs`: datastoreタイプのモデルCSVが格納されたディレクトリ(複数指定可)
+
+### 使用パターン
+
+#### パターン1: 完全CSV方式
+```yaml
+# lineage.yml
+spec: lineage-v1
+models: []  # 空でOK
+
+lineage:
+  - from: HttpRequest.amount
+    to: balance_snapshot.total_amount
+```
+
+```bash
+python lineage_to_md.py lineage.yml output.md \
+  --program-model-dirs data/レイアウト \
+  --datastore-model-dirs data/テーブル定義
+```
+
+#### パターン2: YAML + CSV混在方式
+```yaml
+# lineage.yml
+spec: lineage-v1
+models:
+  # 階層構造はYAMLで定義
+  - name: TransactionDomain
+    type: program
+    props: [id, userId]
+    children:
+      - name: MoneyValueObject
+        type: program
+        props: [amount, currency]
+
+lineage:
+  - from: HttpRequest.amount  # ← CSVから読み込み
+    to: TransactionDomain.MoneyValueObject.amount
+```
+
+#### パターン3: 完全YAML方式(既存互換)
+```yaml
+# 従来通り、すべてYAMLに定義
+spec: lineage-v1
+models: [...]
+lineage: [...]
+```
+
+```bash
+# --model-dirs不要
+python lineage_to_md.py sample.yml output.md
+```
+
+### 実装詳細
+
+- **CSV読み込み** ([lineage_to_md.py:19-83](lineage_to_md.py#L19-L83))
+  - `load_model_from_csv()`: CSVファイルを読み込んでモデル定義を返す
+  - ファイル名から物理名(モデル名)を抽出
+  - エンコーディング自動判定(UTF-8 → CP932 → Shift_JIS)
+
+- **モデル探索** ([lineage_to_md.py:119-166](lineage_to_md.py#L119-L166))
+  - `find_model_csvs()`: 指定ディレクトリから必要なモデルCSVを探索
+  - `**/*.csv`パターンで再帰的に検索
+
+- **参照モデル抽出** ([lineage_to_md.py:85-117](lineage_to_md.py#L85-L117))
+  - `extract_referenced_models()`: lineageから参照されているモデル名を抽出
+
+- **統合ロジック** ([lineage_to_md.py:293-345](lineage_to_md.py#L293-L345))
+  - YAML定義のモデルを優先
+  - 不足分をCSVから補完
+  - 重複チェックと警告メッセージ
+
+### サンプル
+
+実際の使用例は [data/lineage_csv_example.yml](data/lineage_csv_example.yml) を参照してください。
+
 ## 実装時の注意点
 
 ### 新機能追加時

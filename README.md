@@ -117,6 +117,7 @@ graph LR
 | **📜 YAML定義 → Mermaid変換** | 各モデルとカラム、変換関係を記述したYAMLをMarkdownに変換。 |
 | **⚡ シンプル構文** | `from`, `to`, `transform` の3要素だけで定義可能。 |
 | **🏗️ 階層モデル対応** | モデルを入れ子にして階層構造を表現可能(例: Domain → ValueObject)。 |
+| **📁 CSV対応** | モデル定義をCSVファイルから読み込み可能。大規模モデル管理に最適。 |
 | **🧱 JSON Schema 準拠** | `schema.json` によるバリデーション可能。 |
 
 
@@ -209,6 +210,66 @@ python lineage_to_md.py data/event-driven.yml data/output/event-driven.md
 
 **ユースケース**: Kafkaを使ったCQRS/イベントソーシングパターン、DDDのValueObject表現
 
+---
+
+## 📁 CSVからモデルを読み込む
+
+大規模なデータモデルをCSVで管理し、リネージ定義はYAMLで記述できます。
+
+### CSV形式
+
+**ファイル名**: `論理名__物理名.csv`
+
+```csv
+論理名,物理名,データ型,サイズ,キー,説明
+ユーザーID,user_id,VARCHAR,256,PK,
+残高,total_amount,NUMBER,10,,
+```
+
+### 使用方法
+
+#### 完全CSV方式
+
+```yaml
+# lineage.yml (modelsセクションは空)
+spec: lineage-v1
+models: []
+
+lineage:
+  - from: HttpRequest.amount
+    to: transactions.amount
+```
+
+```bash
+python lineage_to_md.py lineage.yml output.md \
+  --program-model-dirs data/レイアウト \
+  --datastore-model-dirs data/テーブル定義
+```
+
+#### YAML + CSV混在方式
+
+```yaml
+# lineage.yml (階層モデルのみYAML定義)
+spec: lineage-v1
+models:
+  - name: TransactionDomain
+    type: program
+    props: [id, userId]
+    children:
+      - name: MoneyValueObject
+        type: program
+        props: [amount, currency]
+
+lineage:
+  - from: HttpRequest.amount  # ← CSVから読み込み
+    to: TransactionDomain.MoneyValueObject.amount
+```
+
+サンプル: [data/lineage_csv_example.yml](data/lineage_csv_example.yml)
+
+詳細は [CLAUDE.md](CLAUDE.md#csvからのモデル読み込み-v30) を参照してください。
+
+---
 
 ## 🧪 Schema Validation
 

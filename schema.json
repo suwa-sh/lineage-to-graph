@@ -5,7 +5,7 @@
   "description": "Minimal column-level lineage spec for Markdown/Mermaid generation. Uses subgraph=model name; fields are nodes. Literals are plain strings in `from` (no dot).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["spec", "models", "lineage"],
+  "required": ["spec", "lineage"],
   "properties": {
     "spec": {
       "type": "string",
@@ -14,11 +14,11 @@
     },
     "models": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 0,
       "items": {
         "$ref": "#/$defs/modelDefinition"
       },
-      "description": "Set of source/intermediate/target models with their fields."
+      "description": "Set of source/intermediate/target models with their fields. Can be empty when using CSV model files."
     },
     "lineage": {
       "type": "array",
@@ -135,6 +135,15 @@
         { "from": "HttpRequest.request_id", "to": "TransactionDomain.id" },
         { "from": "HttpRequest.amount", "to": "TransactionDomain.MoneyValueObject.amount" }
       ]
+    },
+    {
+      "spec": "lineage-v1",
+      "models": [],
+      "lineage": [
+        { "from": "HttpRequest.amount", "to": "TransactionEntity.amount" },
+        { "from": "TransactionEntity.amount", "to": "transactions.amount" }
+      ],
+      "$comment": "CSV-based example: models loaded from CSV files using --program-model-dirs and --datastore-model-dirs"
     }
   ]
 }
