@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/lineage-v1.schema.json",
+  "title": "Column Lineage Spec (v3)",
+  "description": "Minimal column-level lineage spec for Markdown/Mermaid generation. Uses subgraph=model name; fields are nodes. Literals are plain strings in `from` (no dot).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec", "models", "lineage"],
+  "properties": {
+    "spec": {
+      "type": "string",
+      "const": "lineage-v1",
+      "description": "Schema version identifier."
+    },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "type", "props"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Model/type/table name. Used as Mermaid subgraph title."
+          },
+          "type": {
+            "type": "string",
+            "enum": ["program", "datastore"],
+            "description": "Category for coloring/styling."
+          },
+          "props": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Field/property names belonging to this model."
+          }
+        }
+      },
+      "description": "Set of source/intermediate/target models with their fields."
+    },
+    "lineage": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to"],
+        "properties": {
+          "from": {
+            "description": "Source(s). Each token is either a model field (format: Model.field) or a literal string (e.g., JP, now()).",
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": false
+              }
+            ]
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^.]+\\.[^\\s]+$",
+            "description": "Required target field in model.field form."
+          },
+          "transform": {
+            "type": "string",
+            "description": "Optional free-form description of the transformation/aggregation/condition (e.g., 'toUpperCase', 'sum group_by: customer_id, order_date')."
+          }
+        }
+      },
+      "description": "Column-level edges."
+    }
+  },
+  "examples": [
+    {
+      "spec": "lineage-v1",
+      "models": [
+        { "name": "UserDto", "type": "program", "props": ["name", "country"] },
+        { "name": "user_table", "type": "datastore", "props": ["name", "country", "load_timestamp"] },
+        { "name": "sales", "type": "datastore", "props": ["amount", "customer_id", "order_date::date", "status"] },
+        { "name": "daily_summary", "type": "datastore", "props": ["total_amount"] }
+      ],
+      "lineage": [
+        { "from": "UserDto.name", "to": "user_table.name" },
+        { "from": "UserDto.country", "to": "user_table.country", "transform": "toUpperCase" },
+        { "from": "JP", "to": "user_table.country" },
+        { "from": "now()", "to": "user_table.load_timestamp", "transform": "as load_timestamp" },
+        { "from": ["sales.amount"], "to": "daily_summary.total_amount", "transform": "sum group_by: customer_id, order_date filter: status in ['PAID','SHIPPED']" }
+      ]
+    }
+  ]
+}

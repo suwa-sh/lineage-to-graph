@@ -1,0 +1,75 @@
+# Event-Driven Architecture Example
+# Kafkaを使ったイベント駆動アーキテクチャのデータフロー
+# ユースケース: HTTPリクエスト → Domain → Entity → RDB保存 → Kafkaパブリッシュ → サブスクライブ → 集計更新
+
+spec: lineage-v1
+
+models:
+  # Layer 1: HTTP Request
+  - name: HttpRequest
+    type: program
+    props: [request_id, user_id, amount, timestamp]
+
+  # Layer 2: Domain Object
+  - name: TransactionDomain
+    type: program
+    props: [id, userId, value, createdAt]
+
+  # Layer 3: Entity (ORM Entity Object)
+  - name: TransactionEntity
+    type: program
+    props: [transactionId, userId, amount, createdAt]
+
+  # Layer 4: RDB Table
+  - name: transactions
+    type: datastore
+    props: [transaction_id, user_id, amount, created_at]
+
+  # Layer 5: Kafka Message
+  - name: KafkaTransactionEvent
+    type: program
+    props: [event_id, transaction_id, amount]
+
+  # Layer 6: History Query Result
+  - name: transaction_history
+    type: datastore
+    props: [user_id, transaction_id, amount]
+
+  # Layer 7: Snapshot Table
+  - name: user_balance_snapshot
+    type: datastore
+    props: [user_id, total_amount, last_updated]
+
+lineage:
+  # HTTP Request → Domain Object
+  - { from: HttpRequest.request_id, to: TransactionDomain.id }
+  - { from: HttpRequest.user_id, to: TransactionDomain.userId }
+  - { from: HttpRequest.amount, to: TransactionDomain.value }
+  - { from: HttpRequest.timestamp, to: TransactionDomain.createdAt, transform: "parse as timestamp" }
+
+  # Domain Object → Entity Object
+  - { from: TransactionDomain.id, to: TransactionEntity.transactionId }
+  - { from: TransactionDomain.userId, to: TransactionEntity.userId }
+  - { from: TransactionDomain.value, to: TransactionEntity.amount }
+  - { from: TransactionDomain.createdAt, to: TransactionEntity.createdAt }
+
+  # Entity Object → RDB Table (ORM save)
+  - { from: TransactionEntity.transactionId, to: transactions.transaction_id }
+  - { from: TransactionEntity.userId, to: transactions.user_id }
+  - { from: TransactionEntity.amount, to: transactions.amount }
+  - { from: TransactionEntity.createdAt, to: transactions.created_at }
+
+  # Domain Object → Kafka Event (パブリッシュ)
+  - { from: TransactionDomain.id, to: KafkaTransactionEvent.transaction_id }
+  - { from: TransactionDomain.id, to: KafkaTransactionEvent.event_id, transform: "generate UUID from transaction_id" }
+  - { from: TransactionDomain.value, to: KafkaTransactionEvent.amount }
+
+  # Kafka Event → History Query (サブスクライブ後のDB検索)
+  - { from: KafkaTransactionEvent.transaction_id, to: transaction_history.transaction_id, transform: "lookup from transactions" }
+  - { from: transactions.user_id, to: transaction_history.user_id, transform: "join by transaction_id" }
+  - { from: transactions.amount, to: transaction_history.amount, transform: "join by transaction_id" }
+
+  # History + Kafka → Snapshot Update (集計して更新)
+  - { from: transaction_history.user_id, to: user_balance_snapshot.user_id }
+  - { from: [transaction_history.amount, KafkaTransactionEvent.amount], to: user_balance_snapshot.total_amount, transform: "sum(history.amount) + kafka.amount" }
+  - { from: now(), to: user_balance_snapshot.last_updated, transform: "current timestamp" }

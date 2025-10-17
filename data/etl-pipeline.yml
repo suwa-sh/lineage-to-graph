@@ -1,0 +1,48 @@
+# ETL Pipeline Example
+# 多段階データ変換パイプライン (Raw → Staging → DWH → Mart)
+# ユースケース: データレイク/データウェアハウスでの典型的な4層アーキテクチャ
+
+spec: lineage-v1
+
+models:
+  # Layer 1: Raw Data (生データ)
+  - name: raw_sales_log
+    type: datastore
+    props: [log_id, timestamp, product_code, quantity, price]
+
+  # Layer 2: Staging (クレンジング済み)
+  - name: stg_sales
+    type: datastore
+    props: [sale_id, sale_date, product_id, qty, unit_price, total_price]
+
+  # Layer 3: Data Warehouse (統合・正規化)
+  - name: dwh_sales_fact
+    type: datastore
+    props: [fact_id, date_key, product_key, quantity, revenue]
+
+  # Layer 4: Data Mart (集計・分析用)
+  - name: mart_daily_sales
+    type: datastore
+    props: [report_date, total_revenue, total_quantity, avg_unit_price]
+
+lineage:
+  # Raw → Staging: クレンジングと基本変換
+  - { from: raw_sales_log.log_id, to: stg_sales.sale_id }
+  - { from: raw_sales_log.timestamp, to: stg_sales.sale_date, transform: "cast to date" }
+  - { from: raw_sales_log.product_code, to: stg_sales.product_id, transform: "lookup product master" }
+  - { from: raw_sales_log.quantity, to: stg_sales.qty, transform: "coalesce(quantity, 0)" }
+  - { from: raw_sales_log.price, to: stg_sales.unit_price }
+  - { from: [raw_sales_log.quantity, raw_sales_log.price], to: stg_sales.total_price, transform: "quantity * price" }
+
+  # Staging → DWH: ディメンションキーへの変換
+  - { from: stg_sales.sale_id, to: dwh_sales_fact.fact_id }
+  - { from: stg_sales.sale_date, to: dwh_sales_fact.date_key, transform: "join dim_date on date" }
+  - { from: stg_sales.product_id, to: dwh_sales_fact.product_key, transform: "join dim_product on id" }
+  - { from: stg_sales.qty, to: dwh_sales_fact.quantity }
+  - { from: stg_sales.total_price, to: dwh_sales_fact.revenue }
+
+  # DWH → Mart: 日次集計
+  - { from: dwh_sales_fact.date_key, to: mart_daily_sales.report_date, transform: "group by date_key" }
+  - { from: dwh_sales_fact.revenue, to: mart_daily_sales.total_revenue, transform: "sum(revenue)" }
+  - { from: dwh_sales_fact.quantity, to: mart_daily_sales.total_quantity, transform: "sum(quantity)" }
+  - { from: dwh_sales_fact.revenue, to: mart_daily_sales.avg_unit_price, transform: "avg(revenue / quantity)" }

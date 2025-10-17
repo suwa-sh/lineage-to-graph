@@ -1,0 +1,92 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## プロジェクト概要
+
+`lineage-to-graph` は、YAML/JSON形式で定義したカラム単位のデータリネージ情報を、Markdown + Mermaid図へ自動変換するツールです。
+
+## セットアップ
+
+### 必須環境
+- Python 3.8+
+
+### 依存関係のインストール
+```bash
+pip install -r requirements.txt
+```
+
+または直接インストール:
+```bash
+pip install PyYAML
+```
+
+## 基本的なコマンド
+
+### リネージ変換の実行
+```bash
+python lineage_to_md.py data/sample.yml data/output/output.md
+```
+
+### スキーマバリデーション（オプション）
+```bash
+pip install jsonschema
+jsonschema -i data/sample.yml schema.json
+```
+
+## アーキテクチャ
+
+### コア変換ロジック ([lineage_to_md.py](lineage_to_md.py))
+
+このプロジェクトは単一のPythonスクリプトで構成されており、以下の3つの主要フェーズで動作します:
+
+1. **モデル解析フェーズ** ([lineage_to_md.py:26-36](lineage_to_md.py#L26-L36))
+   - YAMLの`models`セクションからモデル名、タイプ(`program`/`datastore`)、プロパティを抽出
+   - 各フィールドのMermaidノードID(`{model}_{field}`形式)を生成し、`field_node_ids`辞書に格納
+   - モデルごとのフィールドリストを`field_nodes_by_model`に保存
+
+2. **Mermaidサブグラフ生成フェーズ** ([lineage_to_md.py:47-54](lineage_to_md.py#L47-L54))
+   - モデルごとにMermaidサブグラフを生成
+   - フィールドをサブグラフ内のノードとして配置
+   - タイプに応じたCSSクラス(`program`/`datastore`)を適用
+
+3. **リネージエッジ生成フェーズ** ([lineage_to_md.py:68-82](lineage_to_md.py#L68-L82))
+   - `lineage`配列の各エントリを処理
+   - `from`が`Model.field`形式の場合は既存ノードIDを使用
+   - それ以外(リテラル値)の場合は`ensure_literal()`でリテラルノードを動的生成
+   - `transform`プロパティがあればエッジラベルとして表示
+
+### ノードID生成ルール ([lineage_to_md.py:4-12](lineage_to_md.py#L4-L12))
+
+`slug()`関数は安全なMermaid識別子を生成します:
+- `::` は `_` に変換
+- 英数字とアンダースコア以外を `_` に変換
+- 連続するアンダースコアを1つにまとめる
+- 数字で始まる場合は `n_` をプレフィックス
+
+### リテラル値とフィールド参照の区別
+
+リネージの`from`値は以下のように解釈されます:
+- **ドット(`.`)を含む場合**: `Model.field`形式のフィールド参照として扱う ([lineage_to_md.py:65-66](lineage_to_md.py#L65-L66))
+- **ドット(`.`)を含まない場合**: リテラル値(例: `JP`, `now()`)として扱い、専用のリテラルノードを生成 ([lineage_to_md.py:56-63](lineage_to_md.py#L56-L63))
+
+### スキーマ仕様 ([schema.json](schema.json))
+
+JSON Schemaは以下を定義:
+- `spec: "lineage-v1"` - バージョン識別子(必須)
+- `models` - モデル定義の配列(name, type, propsが必須)
+- `lineage` - エッジ定義の配列(from, toが必須、transformはオプション)
+- `from`は文字列または配列が可能
+- `to`は必ず`Model.field`形式のパターンを強制
+
+## 実装時の注意点
+
+### 新機能追加時
+- `slug()`関数を使用してMermaid識別子を生成し、構文エラーを防ぐ
+- `field_node_ids`辞書を使用して既存フィールド参照を解決
+- リテラル値は`ensure_literal()`で重複を避けながら動的生成
+- 新しいモデルタイプを追加する場合はCSSクラス定義も追加 ([lineage_to_md.py:41-43](lineage_to_md.py#L41-L43))
+
+### スキーマ拡張時
+- [schema.json](schema.json) の`enum`値を更新(例: 新しい`type`)
+- `examples`セクションに使用例を追加して検証可能にする

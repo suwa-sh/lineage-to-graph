@@ -1,0 +1,33 @@
+# Transformation-Heavy Example
+# 様々なデータ変換処理のショーケース
+# ユースケース: 生データのクレンジングと正規化処理
+
+spec: lineage-v1
+
+models:
+  - name: raw_orders
+    type: datastore
+    props: [order_id, customer_name, order_date_str, total_amount_usd, status_code]
+
+  - name: cleaned_orders
+    type: datastore
+    props: [id, customer_id, order_timestamp, amount_jpy, is_completed, processed_at]
+
+lineage:
+  # ID変換
+  - { from: raw_orders.order_id, to: cleaned_orders.id, transform: "cast to integer" }
+
+  # 名前からIDへのルックアップ
+  - { from: raw_orders.customer_name, to: cleaned_orders.customer_id, transform: "lookup from customer_master" }
+
+  # 日付文字列をタイムスタンプへ変換
+  - { from: raw_orders.order_date_str, to: cleaned_orders.order_timestamp, transform: "parse as ISO8601 timestamp" }
+
+  # 通貨変換と丸め処理
+  - { from: raw_orders.total_amount_usd, to: cleaned_orders.amount_jpy, transform: "USD to JPY * 150, round to integer" }
+
+  # ステータスコードからブール値へ
+  - { from: raw_orders.status_code, to: cleaned_orders.is_completed, transform: "status_code in ['SHIPPED', 'DELIVERED']" }
+
+  # 処理タイムスタンプの追加
+  - { from: current_timestamp(), to: cleaned_orders.processed_at, transform: "system time" }

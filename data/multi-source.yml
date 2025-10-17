@@ -1,0 +1,35 @@
+# Multi-Source Integration Example
+# 複数のデータソースから1つのターゲットテーブルへ統合
+# ユースケース: 顧客情報を複数システムから収集してマスタテーブルを構築
+
+spec: lineage-v1
+
+models:
+  - name: CRM_API
+    type: program
+    props: [customer_id, first_name, last_name]
+
+  - name: billing_csv
+    type: datastore
+    props: [account_id, email, phone]
+
+  - name: marketing_events
+    type: datastore
+    props: [user_id, signup_date, campaign_source]
+
+  - name: customer_master
+    type: datastore
+    props: [id, full_name, email, phone, created_at, acquisition_source]
+
+lineage:
+  # CRM APIからの基本情報
+  - { from: CRM_API.customer_id, to: customer_master.id }
+  - { from: [CRM_API.first_name, CRM_API.last_name], to: customer_master.full_name, transform: "concat with space" }
+
+  # 請求CSVから連絡先情報
+  - { from: billing_csv.email, to: customer_master.email }
+  - { from: billing_csv.phone, to: customer_master.phone }
+
+  # マーケティングイベントから獲得情報
+  - { from: marketing_events.signup_date, to: customer_master.created_at }
+  - { from: marketing_events.campaign_source, to: customer_master.acquisition_source }

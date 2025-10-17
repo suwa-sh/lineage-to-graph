@@ -1,0 +1,25 @@
+spec: lineage-v1
+
+models:
+  - name: UserDto
+    type: program
+    props: [name, country]
+
+  - name: user_table
+    type: datastore
+    props: [name, country, load_timestamp]
+
+  - name: sales
+    type: datastore
+    props: [amount, customer_id, "order_date::date", status]
+
+  - name: daily_summary
+    type: datastore
+    props: [total_amount]
+
+lineage:
+  - { from: UserDto.name,    to: user_table.name }
+  - { from: UserDto.country, to: user_table.country, transform: toUpperCase }
+  - { from: JP,              to: user_table.country }
+  - { from: now(),           to: user_table.load_timestamp, transform: as load_timestamp }
+  - { from: [sales.amount],  to: daily_summary.total_amount, transform: "sum group_by: customer_id, order_date filter: status in ['PAID','SHIPPED']" }
