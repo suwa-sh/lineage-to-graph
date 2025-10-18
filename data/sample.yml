@@ -20,6 +20,6 @@ models:
 lineage:
   - { from: UserDto.name,    to: user_table.name }
   - { from: UserDto.country, to: user_table.country, transform: toUpperCase }
-  - { from: JP,              to: user_table.country }
+  - { from: JP,              to: user_table.country, transform: デフォルト値 }
   - { from: now(),           to: user_table.load_timestamp, transform: as load_timestamp }
   - { from: [sales.amount],  to: daily_summary.total_amount, transform: "sum group_by: customer_id, order_date filter: status in ['PAID','SHIPPED']" }
