@@ -334,7 +334,118 @@ python lineage_to_md.py sample.yml output.md
 
 ### サンプル
 
-実際の使用例は [data/lineage_csv_example.yml](data/lineage_csv_example.yml) を参照してください。
+実際の使用例は [data/event-driven-csv.yml](data/event-driven-csv.yml) を参照してください。
+
+## CSVモデルのフィールドフィルタリング (v5.0+)
+
+### 概要
+
+CSVから読み込んだモデルについて、リネージで実際に使用されているフィールドのみをMermaid図に表示します。大規模なCSV定義(数十フィールド)を使用する場合でも、図が読みやすくなります。
+
+### デフォルト動作
+
+**フィルタリング有効**(デフォルト): CSVモデルは使用フィールドのみ表示
+- YAML定義のモデルは全プロパティを表示(従来通り)
+- CSV由来のモデルはlineageで参照されているフィールドのみ表示
+- モデル全体参照(`from: Money`)の場合は全フィールドを表示
+
+### オプション
+
+`--show-all-props` フラグを使用すると、CSVモデルでも全プロパティを表示できます(後方互換性)。
+
+### 使用例
+
+#### サンプルデータ
+
+**CSV定義** ([data/レイアウト/HTTPリクエスト__HttpRequest.csv](data/レイアウト/HTTPリクエスト__HttpRequest.csv)): 27フィールド
+```csv
+論理名,物理名,データ型
+リクエストID,request_id,String
+ユーザーID,user_id,String
+金額,amount,String
+タイムスタンプ,timestamp,String
+IPアドレス,ip_address,String
+ユーザーエージェント,user_agent,String
+... (さらに20+フィールド)
+```
+
+**リネージ定義** ([data/event-driven-csv.yml](data/event-driven-csv.yml)): 4フィールドのみ使用
+```yaml
+lineage:
+  - { from: HttpRequest.request_id, to: TransactionDomain.id }
+  - { from: HttpRequest.user_id, to: TransactionDomain.userId }
+  - { from: HttpRequest.timestamp, to: TransactionDomain.createdAt }
+  - { from: HttpRequest.amount, to: Money.amount }
+```
+
+#### 実行コマンド
+
+```bash
+# デフォルト: 使用フィールドのみ表示 (4フィールド)
+python lineage_to_md.py data/event-driven-csv.yml output_filtered.md \
+  --program-model-dirs data/レイアウト \
+  --datastore-model-dirs data/テーブル定義
+
+# --show-all-props: 全プロパティ表示 (27フィールド)
+python lineage_to_md.py data/event-driven-csv.yml output_all.md \
+  --program-model-dirs data/レイアウト \
+  --datastore-model-dirs data/テーブル定義 \
+  --show-all-props
+```
+
+#### 出力の違い
+
+**フィルタリング有効版** (デフォルト):
+```mermaid
+subgraph HttpRequest[HttpRequest]
+  HttpRequest_request_id["request_id"]:::property
+  HttpRequest_user_id["user_id"]:::property
+  HttpRequest_amount["amount"]:::property
+  HttpRequest_timestamp["timestamp"]:::property
+end
+```
+→ **4フィールドのみ表示** (使用しているものだけ)
+
+**全プロパティ版** (`--show-all-props`):
+```mermaid
+subgraph HttpRequest[HttpRequest]
+  HttpRequest_request_id["request_id"]:::property
+  HttpRequest_user_id["user_id"]:::property
+  HttpRequest_amount["amount"]:::property
+  HttpRequest_timestamp["timestamp"]:::property
+  HttpRequest_ip_address["ip_address"]:::property
+  HttpRequest_user_agent["user_agent"]:::property
+  HttpRequest_referer["referer"]:::property
+  ... (さらに20+フィールド)
+end
+```
+→ **27フィールド全て表示** (CSVの全定義)
+
+### 効果
+
+- **図の簡潔化**: 大規模CSV(50+フィールド)でも、使用部分だけが可視化される
+- **可読性向上**: 不要な情報が省かれ、データフローに集中できる
+- **柔軟性**: `--show-all-props`で全体像も確認可能
+
+### 実装詳細
+
+- **使用フィールド抽出** ([lineage_to_md.py:134-217](lineage_to_md.py#L134-L217))
+  - `extract_referenced_fields()`: lineageから実際に使用されているフィールドを抽出
+  - モデル全体参照も検出し、その場合は全フィールドをマーク
+
+- **フィルタリングロジック** ([lineage_to_md.py:284-366](lineage_to_md.py#L284-L366))
+  - `parse_models_recursive()`: CSV由来のモデルのみフィルタリング
+  - YAML定義のモデルは従来通り全プロパティを表示
+
+- **メイン処理** ([lineage_to_md.py:417-485](lineage_to_md.py#L417-L485))
+  - `show_all_props` パラメータで動作を制御
+  - CSV由来モデルを追跡して適切にフィルタリング
+
+### 比較サンプル
+
+実際の出力比較:
+- フィルタリング有効版: [data/output/event-driven-csv_filtered.md](data/output/event-driven-csv_filtered.md)
+- 全プロパティ版: [data/output/event-driven-csv_all_props.md](data/output/event-driven-csv_all_props.md)
 
 ## 実装時の注意点
 

@@ -115,14 +115,113 @@ def extract_referenced_models(lineage: List[Dict[str, Any]]) -> Set[str]:
             if '.' in ref:  # Field reference like 'Model.field'
                 model_name = ref.split('.')[0]
                 models.add(model_name)
+            else:
+                # Could be a model-level reference (e.g., 'Money')
+                # Add it to the set - we'll check if it's a real model later
+                models.add(ref)
 
         # Extract from 'to' field
         to_val = entry.get('to', '')
         if '.' in to_val:
             model_name = to_val.split('.')[0]
             models.add(model_name)
+        elif to_val:
+            # Could be a model-level reference
+            models.add(to_val)
 
     return models
+
+def extract_referenced_fields(lineage: List[Dict[str, Any]], yaml_models: List[Dict[str, Any]]) -> Dict[str, Set[str]]:
+    """Extract all fields referenced in lineage definitions.
+
+    This function analyzes lineage entries to determine which fields are actually used.
+    It handles:
+    - Direct field references (e.g., 'Model.field')
+    - Model-level references (e.g., 'Model' without field -> all fields in that model)
+    - Nested model references (e.g., 'Parent.Child.field')
+
+    Args:
+        lineage: List of lineage entries with 'from' and 'to' fields
+        yaml_models: List of model definitions from YAML (to identify model-level references)
+
+    Returns:
+        Dict mapping model paths to sets of field names that are actually used
+        Example: {'HttpRequest': {'amount', 'user_id'}, 'TransactionDomain': {'id', 'money'}}
+    """
+    used_fields: Dict[str, Set[str]] = {}
+
+    # Build a set of all defined model names (including nested ones) from YAML
+    # to distinguish model references from field references
+    def collect_model_names(models: List[Dict[str, Any]], prefix: str = "") -> Set[str]:
+        """Recursively collect all model names including nested ones."""
+        names = set()
+        for m in models:
+            model_path = f"{prefix}.{m['name']}" if prefix else m['name']
+            names.add(model_path)
+            if 'children' in m:
+                names.update(collect_model_names(m['children'], model_path))
+        return names
+
+    known_models = collect_model_names(yaml_models)
+
+    def add_field(ref: str, is_from: bool = True) -> None:
+        """Add a field reference to the used_fields dictionary.
+
+        Args:
+            ref: Reference string (can be 'Model', 'Model.field', or 'Model.Child.field')
+            is_from: True if this is a 'from' reference, False if 'to'
+        """
+        # Check if it's a model-level reference (no dot or matches a known nested model)
+        if ref in known_models:
+            # Model-level reference: mark all fields in this model as used
+            # We'll handle this by adding a special marker
+            if ref not in used_fields:
+                used_fields[ref] = set(['*'])  # '*' means all fields
+            else:
+                used_fields[ref].add('*')
+            return
+
+        # Check if it's a field reference
+        if '.' in ref:
+            parts = ref.split('.')
+
+            # Try to identify the model path and field name
+            # The field is always the last part
+            field_name = parts[-1]
+
+            # The model path is everything before the field
+            model_path = '.'.join(parts[:-1])
+
+            # Add this field to the used fields set
+            if model_path not in used_fields:
+                used_fields[model_path] = set()
+
+            # Don't add field if we already marked all fields with '*'
+            if '*' not in used_fields[model_path]:
+                used_fields[model_path].add(field_name)
+
+    # Process all lineage entries
+    for entry in lineage:
+        # Process 'from' field (can be string or list)
+        from_val = entry.get('from')
+        if isinstance(from_val, str):
+            from_list = [from_val]
+        elif isinstance(from_val, list):
+            from_list = from_val
+        else:
+            from_list = []
+
+        for ref in from_list:
+            # Skip literal values (things without dots that aren't known models)
+            if '.' in ref or ref in known_models:
+                add_field(ref, is_from=True)
+
+        # Process 'to' field
+        to_val = entry.get('to', '')
+        if to_val and ('.' in to_val or to_val in known_models):
+            add_field(to_val, is_from=False)
+
+    return used_fields
 
 def find_model_csvs(
     program_dirs: List[str],
@@ -195,7 +294,9 @@ def parse_models_recursive(
     model_types: Optional[Dict[str, str]] = None,
     field_nodes_by_model: Optional[Dict[str, List[Tuple[str, str]]]] = None,
     field_node_ids: Optional[Dict[str, str]] = None,
-    model_hierarchy: Optional[Dict[str, Dict[str, Any]]] = None
+    model_hierarchy: Optional[Dict[str, Dict[str, Any]]] = None,
+    used_fields: Optional[Dict[str, Set[str]]] = None,
+    csv_model_names: Optional[Set[str]] = None
 ) -> Tuple[Dict[str, str], Dict[str, List[Tuple[str, str]]], Dict[str, str], Dict[str, Dict[str, Any]]]:
     """Recursively parse models and their children to build model hierarchy.
 
@@ -206,6 +307,8 @@ def parse_models_recursive(
         field_nodes_by_model: Dict mapping model paths to field nodes
         field_node_ids: Dict mapping field references to node IDs
         model_hierarchy: Dict storing parent-child relationships
+        used_fields: Dict mapping model paths to sets of actually used field names (for filtering)
+        csv_model_names: Set of model names loaded from CSV (only these will be filtered)
 
     Returns:
         Tuple of (model_types, field_nodes_by_model, field_node_ids, model_hierarchy)
@@ -235,9 +338,26 @@ def parse_models_recursive(
             'children': [f"{full_model_path}.{c['name']}" for c in children] if children else []
         }
 
+        # Determine if we should filter fields for this model
+        should_filter = (
+            used_fields is not None and
+            csv_model_names is not None and
+            name in csv_model_names and
+            full_model_path in used_fields
+        )
+
         # Parse fields
         nodes = []
         for p in props:
+            # Apply filtering if applicable
+            if should_filter:
+                # Check if this field is actually used
+                model_used_fields = used_fields.get(full_model_path, set())
+                # '*' means all fields, otherwise check if field is in the set
+                if '*' not in model_used_fields and p not in model_used_fields:
+                    # Skip this field as it's not used in lineage
+                    continue
+
             nid = slug(f"{full_model_path}_{p}".replace(".", "_"))
             nodes.append((nid, str(p)))
             field_node_ids[f"{full_model_path}.{p}"] = nid
@@ -245,7 +365,10 @@ def parse_models_recursive(
 
         # Recursively parse children
         if children:
-            parse_models_recursive(children, full_model_path, model_types, field_nodes_by_model, field_node_ids, model_hierarchy)
+            parse_models_recursive(
+                children, full_model_path, model_types, field_nodes_by_model,
+                field_node_ids, model_hierarchy, used_fields, csv_model_names
+            )
 
     return model_types, field_nodes_by_model, field_node_ids, model_hierarchy
 
@@ -302,7 +425,8 @@ def main(
     input_yaml: str,
     output_md: str,
     program_model_dirs: Optional[List[str]] = None,
-    datastore_model_dirs: Optional[List[str]] = None
+    datastore_model_dirs: Optional[List[str]] = None,
+    show_all_props: bool = False
 ) -> None:
     """Convert YAML lineage definition to Mermaid Markdown diagram.
 
@@ -311,6 +435,7 @@ def main(
         output_md: Path to output Markdown file
         program_model_dirs: List of directories containing program model CSVs
         datastore_model_dirs: List of directories containing datastore model CSVs
+        show_all_props: If True, show all properties; if False, show only used fields for CSV models
     """
     data = yaml.safe_load(Path(input_yaml).read_text(encoding="utf-8"))
 
@@ -319,6 +444,7 @@ def main(
 
     # Merge YAML models with CSV models if directories are specified
     models = list(yaml_models)  # Start with YAML-defined models
+    csv_model_names = set()  # Track which models came from CSV
 
     if program_model_dirs or datastore_model_dirs:
         # Extract model names already defined in YAML
@@ -340,6 +466,9 @@ def main(
                 missing_models
             )
 
+            # Track CSV model names
+            csv_model_names = set(csv_models.keys())
+
             # Add CSV models to the list
             models.extend(csv_models.values())
 
@@ -349,8 +478,20 @@ def main(
             if still_missing:
                 print(f"Info: The following values will be treated as literals (not found as models in YAML or CSV): {', '.join(sorted(still_missing))}", file=sys.stderr)
 
+    # Extract used fields from lineage (for filtering CSV models)
+    used_fields = None
+    if not show_all_props and csv_model_names:
+        # We need to pass all models (including CSV-loaded ones) to correctly identify model references
+        # Also need to add CSV model names to the known models list
+        all_models_for_ref_extraction = list(models)
+        used_fields = extract_referenced_fields(lineage, all_models_for_ref_extraction)
+
     # Use recursive parser to handle nested models
-    model_types, field_nodes_by_model, field_node_ids, model_hierarchy = parse_models_recursive(models)
+    model_types, field_nodes_by_model, field_node_ids, model_hierarchy = parse_models_recursive(
+        models,
+        used_fields=used_fields,
+        csv_model_names=csv_model_names
+    )
 
     lines = [
         "```mermaid",
@@ -480,6 +621,11 @@ Examples:
         dest="datastore_model_dirs",
         help="Directory containing datastore model CSV files (can be specified multiple times)"
     )
+    parser.add_argument(
+        "--show-all-props",
+        action="store_true",
+        help="Show all properties from CSV models (default: show only fields used in lineage)"
+    )
 
     args = parser.parse_args()
 
@@ -487,5 +633,6 @@ Examples:
         args.input_yaml,
         args.output_md,
         program_model_dirs=args.program_model_dirs or [],
-        datastore_model_dirs=args.datastore_model_dirs or []
+        datastore_model_dirs=args.datastore_model_dirs or [],
+        show_all_props=args.show_all_props
     )
