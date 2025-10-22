@@ -6,12 +6,20 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Set
 
 def slug(s: str) -> str:
-    """Generate safe Mermaid identifier from string."""
+    """Generate safe Mermaid identifier from string.
+
+    Supports Japanese characters by preserving them in the identifier.
+    Only replaces symbols and whitespace with underscores.
+    """
     s = str(s).replace("::", "_")
-    s = re.sub(r"[^A-Za-z0-9_]+", "_", s)
+    # 日本語文字を保持しつつ、スペースや記号のみを "_" に変換
+    # [\s\-./\\()[\]{}]+ = スペース、ハイフン、ドット、スラッシュ、括弧など
+    s = re.sub(r"[\s\-./\\()\[\]{}]+", "_", s)
+    # 連続するアンダースコアを1つにまとめる
     s = re.sub(r"_+", "_", s).strip("_")
     if not s:
         s = "id"
+    # 数字で始まる場合は "n_" を付加
     if re.match(r"^[0-9]", s):
         s = "n_" + s
     return s
