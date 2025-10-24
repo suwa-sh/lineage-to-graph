@@ -2,6 +2,7 @@ import sys
 import yaml
 import re
 import csv
+import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Set
 
@@ -88,6 +89,173 @@ def load_model_from_csv(csv_path: str, model_type: str) -> Optional[Dict[str, An
 
     except Exception as e:
         print(f"Error loading CSV '{csv_path}': {e}", file=sys.stderr)
+        return None
+
+def load_model_from_openapi(
+    spec_path: str,
+    schema_name: str,
+    model_type: str
+) -> Optional[Dict[str, Any]]:
+    """Load model definition from OpenAPI specification.
+
+    Supports OpenAPI 3.0.x and 3.1.x in YAML or JSON format.
+    Extracts properties from components/schemas/<schema_name>.
+
+    Args:
+        spec_path: Path to OpenAPI spec file (.yaml, .yml, .json)
+        schema_name: Schema name in components/schemas
+        model_type: 'program' or 'datastore'
+
+    Returns:
+        Model definition dict {name, type, props} or None if failed
+
+    Example:
+        # openapi.yaml:
+        components:
+          schemas:
+            User:
+              type: object
+              properties:
+                id: {type: string}
+                name: {type: string}
+
+        load_model_from_openapi('openapi.yaml', 'User', 'program')
+        # Returns: {'name': 'User', 'type': 'program', 'props': ['id', 'name']}
+    """
+    try:
+        path = Path(spec_path)
+        if not path.exists():
+            print(f"Error: OpenAPI spec file '{spec_path}' does not exist", file=sys.stderr)
+            return None
+
+        # Load spec file (YAML or JSON)
+        with open(path, 'r', encoding='utf-8') as f:
+            if path.suffix.lower() in ['.yaml', '.yml']:
+                spec = yaml.safe_load(f)
+            elif path.suffix.lower() == '.json':
+                spec = json.load(f)
+            else:
+                print(f"Error: Unsupported file format '{path.suffix}' (expected .yaml, .yml, or .json)", file=sys.stderr)
+                return None
+
+        # Navigate to components/schemas
+        if 'components' not in spec:
+            print(f"Warning: No 'components' section in OpenAPI spec '{spec_path}'", file=sys.stderr)
+            return None
+
+        schemas = spec['components'].get('schemas', {})
+        if schema_name not in schemas:
+            print(f"Warning: Schema '{schema_name}' not found in OpenAPI spec '{spec_path}'", file=sys.stderr)
+            return None
+
+        schema = schemas[schema_name]
+
+        # Extract properties
+        props = []
+        if 'properties' in schema:
+            props = list(schema['properties'].keys())
+
+        # Handle allOf (merge properties from referenced schemas)
+        if 'allOf' in schema:
+            for item in schema['allOf']:
+                if 'properties' in item:
+                    props.extend(item['properties'].keys())
+                # Note: $ref resolution is not implemented for simplicity
+                # Can be added in future if needed
+
+        if not props:
+            print(f"Warning: No properties found in schema '{schema_name}' in '{spec_path}'", file=sys.stderr)
+            return None
+
+        return {
+            'name': schema_name,
+            'type': model_type,
+            'props': props
+        }
+
+    except Exception as e:
+        print(f"Error loading OpenAPI spec '{spec_path}': {e}", file=sys.stderr)
+        return None
+
+def load_model_from_asyncapi(
+    spec_path: str,
+    message_name: str,
+    model_type: str
+) -> Optional[Dict[str, Any]]:
+    """Load model definition from AsyncAPI specification.
+
+    Supports AsyncAPI 2.x and 3.x in YAML or JSON format.
+    Extracts properties from components/messages/<message_name>/payload.
+
+    Args:
+        spec_path: Path to AsyncAPI spec file (.yaml, .yml, .json)
+        message_name: Message name in components/messages
+        model_type: 'program' or 'datastore'
+
+    Returns:
+        Model definition dict {name, type, props} or None if failed
+
+    Example:
+        # asyncapi.yaml:
+        components:
+          messages:
+            UserCreated:
+              payload:
+                type: object
+                properties:
+                  userId: {type: string}
+                  name: {type: string}
+
+        load_model_from_asyncapi('asyncapi.yaml', 'UserCreated', 'program')
+        # Returns: {'name': 'UserCreated', 'type': 'program', 'props': ['userId', 'name']}
+    """
+    try:
+        path = Path(spec_path)
+        if not path.exists():
+            print(f"Error: AsyncAPI spec file '{spec_path}' does not exist", file=sys.stderr)
+            return None
+
+        # Load spec file (YAML or JSON)
+        with open(path, 'r', encoding='utf-8') as f:
+            if path.suffix.lower() in ['.yaml', '.yml']:
+                spec = yaml.safe_load(f)
+            elif path.suffix.lower() == '.json':
+                spec = json.load(f)
+            else:
+                print(f"Error: Unsupported file format '{path.suffix}' (expected .yaml, .yml, or .json)", file=sys.stderr)
+                return None
+
+        # Navigate to components/messages
+        if 'components' not in spec:
+            print(f"Warning: No 'components' section in AsyncAPI spec '{spec_path}'", file=sys.stderr)
+            return None
+
+        messages = spec['components'].get('messages', {})
+        if message_name not in messages:
+            print(f"Warning: Message '{message_name}' not found in AsyncAPI spec '{spec_path}'", file=sys.stderr)
+            return None
+
+        message = messages[message_name]
+
+        # Extract properties from payload
+        props = []
+        if 'payload' in message:
+            payload = message['payload']
+            if 'properties' in payload:
+                props = list(payload['properties'].keys())
+
+        if not props:
+            print(f"Warning: No properties found in message '{message_name}' payload in '{spec_path}'", file=sys.stderr)
+            return None
+
+        return {
+            'name': message_name,
+            'type': model_type,
+            'props': props
+        }
+
+    except Exception as e:
+        print(f"Error loading AsyncAPI spec '{spec_path}': {e}", file=sys.stderr)
         return None
 
 def parse_reference(ref: str) -> Tuple[str, Optional[str], Optional[str]]:
@@ -307,6 +475,112 @@ def extract_referenced_fields(lineage: List[Dict[str, Any]], yaml_models: List[D
                 add_field(to_val, is_from=False)
 
     return used_fields
+
+def find_openapi_models(
+    spec_files: List[str],
+    required_models: Set[str],
+    default_type: str = 'program'
+) -> Dict[str, Dict[str, Any]]:
+    """Find and load model definitions from OpenAPI specification files.
+
+    Args:
+        spec_files: List of OpenAPI spec file paths
+        required_models: Set of model names that are referenced in lineage
+        default_type: Default model type ('program' or 'datastore')
+
+    Returns:
+        Dict mapping model names to model definitions {name, type, props}
+    """
+    models = {}
+
+    for spec_path in spec_files:
+        path = Path(spec_path)
+        if not path.exists():
+            print(f"Warning: OpenAPI spec file '{spec_path}' does not exist", file=sys.stderr)
+            continue
+
+        try:
+            # Load spec file
+            with open(path, 'r', encoding='utf-8') as f:
+                if path.suffix.lower() in ['.yaml', '.yml']:
+                    spec = yaml.safe_load(f)
+                elif path.suffix.lower() == '.json':
+                    spec = json.load(f)
+                else:
+                    print(f"Warning: Unsupported file format '{path.suffix}'", file=sys.stderr)
+                    continue
+
+            # Get all schemas
+            if 'components' not in spec or 'schemas' not in spec['components']:
+                continue
+
+            schemas = spec['components']['schemas']
+
+            # Load required models
+            for model_name in required_models:
+                if model_name in schemas and model_name not in models:
+                    model_def = load_model_from_openapi(spec_path, model_name, default_type)
+                    if model_def:
+                        models[model_name] = model_def
+
+        except Exception as e:
+            print(f"Error processing OpenAPI spec '{spec_path}': {e}", file=sys.stderr)
+            continue
+
+    return models
+
+def find_asyncapi_models(
+    spec_files: List[str],
+    required_models: Set[str],
+    default_type: str = 'program'
+) -> Dict[str, Dict[str, Any]]:
+    """Find and load model definitions from AsyncAPI specification files.
+
+    Args:
+        spec_files: List of AsyncAPI spec file paths
+        required_models: Set of model names that are referenced in lineage
+        default_type: Default model type ('program' or 'datastore')
+
+    Returns:
+        Dict mapping model names to model definitions {name, type, props}
+    """
+    models = {}
+
+    for spec_path in spec_files:
+        path = Path(spec_path)
+        if not path.exists():
+            print(f"Warning: AsyncAPI spec file '{spec_path}' does not exist", file=sys.stderr)
+            continue
+
+        try:
+            # Load spec file
+            with open(path, 'r', encoding='utf-8') as f:
+                if path.suffix.lower() in ['.yaml', '.yml']:
+                    spec = yaml.safe_load(f)
+                elif path.suffix.lower() == '.json':
+                    spec = json.load(f)
+                else:
+                    print(f"Warning: Unsupported file format '{path.suffix}'", file=sys.stderr)
+                    continue
+
+            # Get all messages
+            if 'components' not in spec or 'messages' not in spec['components']:
+                continue
+
+            messages = spec['components']['messages']
+
+            # Load required models
+            for model_name in required_models:
+                if model_name in messages and model_name not in models:
+                    model_def = load_model_from_asyncapi(spec_path, model_name, default_type)
+                    if model_def:
+                        models[model_name] = model_def
+
+        except Exception as e:
+            print(f"Error processing AsyncAPI spec '{spec_path}': {e}", file=sys.stderr)
+            continue
+
+    return models
 
 def find_model_csvs(
     program_dirs: List[str],
@@ -555,6 +829,8 @@ def main(
     output_md: str,
     program_model_dirs: Optional[List[str]] = None,
     datastore_model_dirs: Optional[List[str]] = None,
+    openapi_specs: Optional[List[str]] = None,
+    asyncapi_specs: Optional[List[str]] = None,
     show_all_props: bool = False
 ) -> None:
     """Convert YAML lineage definition to Mermaid Markdown diagram.
@@ -564,6 +840,8 @@ def main(
         output_md: Path to output Markdown file
         program_model_dirs: List of directories containing program model CSVs
         datastore_model_dirs: List of directories containing datastore model CSVs
+        openapi_specs: List of OpenAPI specification files
+        asyncapi_specs: List of AsyncAPI specification files
         show_all_props: If True, show all properties; if False, show only used fields for CSV models
     """
     data = yaml.safe_load(Path(input_yaml).read_text(encoding="utf-8"))
@@ -571,24 +849,50 @@ def main(
     yaml_models = data.get("models", [])
     lineage = data.get("lineage", [])
 
-    # Merge YAML models with CSV models if directories are specified
+    # Extract model names already defined in YAML
+    yaml_model_names = set()
+    for m in yaml_models:
+        yaml_model_names.add(m['name'])
+
+    # Extract all referenced models from lineage
+    referenced_models = extract_referenced_models(lineage)
+
+    # Find models that need to be loaded from external sources
+    missing_models = referenced_models - yaml_model_names
+
+    # Merge YAML models with external models if sources are specified
     models = list(yaml_models)  # Start with YAML-defined models
     csv_model_names = set()  # Track which models came from CSV
+    external_model_names = set()  # Track models from OpenAPI/AsyncAPI
 
-    if program_model_dirs or datastore_model_dirs:
-        # Extract model names already defined in YAML
-        yaml_model_names = set()
-        for m in yaml_models:
-            yaml_model_names.add(m['name'])
+    if missing_models:
+        # Priority order: OpenAPI -> AsyncAPI -> CSV
+        # This ensures that API specs take precedence over CSV files
 
-        # Extract all referenced models from lineage
-        referenced_models = extract_referenced_models(lineage)
+        # 1. Load from OpenAPI specs (program type by default)
+        if openapi_specs:
+            openapi_models = find_openapi_models(
+                openapi_specs or [],
+                missing_models,
+                default_type='program'
+            )
+            external_model_names.update(openapi_models.keys())
+            models.extend(openapi_models.values())
+            missing_models -= set(openapi_models.keys())
 
-        # Find models that need to be loaded from CSV
-        missing_models = referenced_models - yaml_model_names
+        # 2. Load from AsyncAPI specs (program type by default)
+        if asyncapi_specs:
+            asyncapi_models = find_asyncapi_models(
+                asyncapi_specs or [],
+                missing_models,
+                default_type='program'
+            )
+            external_model_names.update(asyncapi_models.keys())
+            models.extend(asyncapi_models.values())
+            missing_models -= set(asyncapi_models.keys())
 
-        if missing_models:
-            # Load missing models from CSV directories
+        # 3. Load from CSV directories (last resort)
+        if program_model_dirs or datastore_model_dirs:
             csv_models = find_model_csvs(
                 program_model_dirs or [],
                 datastore_model_dirs or [],
@@ -600,12 +904,11 @@ def main(
 
             # Add CSV models to the list
             models.extend(csv_models.values())
+            missing_models -= csv_model_names
 
-            # Warn about models that couldn't be found (likely literals)
-            found_csv_models = set(csv_models.keys())
-            still_missing = missing_models - found_csv_models
-            if still_missing:
-                print(f"Info: The following values will be treated as literals (not found as models in YAML or CSV): {', '.join(sorted(still_missing))}", file=sys.stderr)
+        # Warn about models that couldn't be found (likely literals)
+        if missing_models:
+            print(f"Info: The following values will be treated as literals (not found as models): {', '.join(sorted(missing_models))}", file=sys.stderr)
 
     # Extract model instances from lineage
     model_instances = extract_model_instances(lineage)
@@ -734,10 +1037,19 @@ Examples:
     --program-model-dirs data/レイアウト \\
     --datastore-model-dirs data/テーブル定義
 
-  # Mixed mode (YAML + CSV)
+  # OpenAPI mode
+  python lineage_to_md.py lineage.yml output.md \\
+    --openapi-specs data/openapi/user-api.yaml
+
+  # AsyncAPI mode
+  python lineage_to_md.py lineage.yml output.md \\
+    --asyncapi-specs data/asyncapi/events.yaml
+
+  # Mixed mode (YAML + CSV + OpenAPI + AsyncAPI)
   python lineage_to_md.py lineage.yml output.md \\
     --program-model-dirs data/レイアウト \\
-    --datastore-model-dirs data/テーブル定義
+    --openapi-specs data/openapi/api.yaml \\
+    --asyncapi-specs data/asyncapi/events.yaml
 """
     )
 
@@ -756,6 +1068,18 @@ Examples:
         help="Directory containing datastore model CSV files (can be specified multiple times)"
     )
     parser.add_argument(
+        "--openapi-specs", "-o",
+        action="append",
+        dest="openapi_specs",
+        help="OpenAPI specification file (YAML/JSON) (can be specified multiple times)"
+    )
+    parser.add_argument(
+        "--asyncapi-specs", "-a",
+        action="append",
+        dest="asyncapi_specs",
+        help="AsyncAPI specification file (YAML/JSON) (can be specified multiple times)"
+    )
+    parser.add_argument(
         "--show-all-props",
         action="store_true",
         help="Show all properties from CSV models (default: show only fields used in lineage)"
@@ -768,5 +1092,7 @@ Examples:
         args.output_md,
         program_model_dirs=args.program_model_dirs or [],
         datastore_model_dirs=args.datastore_model_dirs or [],
+        openapi_specs=args.openapi_specs or [],
+        asyncapi_specs=args.asyncapi_specs or [],
         show_all_props=args.show_all_props
     )

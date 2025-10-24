@@ -1,0 +1,26 @@
+spec: lineage-v1
+
+models:
+  - name: user_table
+    type: datastore
+    props: [id, name, email, created_at, updated_at]
+
+# UserRequest と UserCreated は外部API仕様から読み込まれる
+
+lineage:
+  # OpenAPI: UserRequest → AsyncAPI: UserCreated
+  - from: UserRequest.name
+    to: UserCreated.name
+  - from: UserRequest.email
+    to: UserCreated.email
+
+  # AsyncAPI: UserCreated → Database: user_table
+  - from: UserCreated.userId
+    to: user_table.id
+  - from: UserCreated.name
+    to: user_table.name
+  - from: UserCreated.email
+    to: user_table.email
+  - from: UserCreated.timestamp
+    to: user_table.created_at
+    transform: "as created_at"

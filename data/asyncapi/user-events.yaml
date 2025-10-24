@@ -1,0 +1,41 @@
+asyncapi: 2.6.0
+info:
+  title: User Events
+  version: 1.0.0
+  description: User domain events for lineage-to-graph demo
+
+components:
+  messages:
+    UserCreated:
+      description: Event published when a user is created
+      payload:
+        type: object
+        properties:
+          userId:
+            type: string
+            description: User ID
+          name:
+            type: string
+            description: User name
+          email:
+            type: string
+            description: User email address
+          timestamp:
+            type: string
+            format: date-time
+            description: Event timestamp
+
+    UserUpdated:
+      description: Event published when a user is updated
+      payload:
+        type: object
+        properties:
+          userId:
+            type: string
+          name:
+            type: string
+          email:
+            type: string
+          timestamp:
+            type: string
+            format: date-time

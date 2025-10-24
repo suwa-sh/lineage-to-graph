@@ -1,0 +1,36 @@
+openapi: 3.0.0
+info:
+  title: User API
+  version: 1.0.0
+  description: Sample User API for lineage-to-graph demo
+
+components:
+  schemas:
+    User:
+      type: object
+      description: User model
+      properties:
+        id:
+          type: string
+          description: User ID
+        name:
+          type: string
+          description: User name
+        email:
+          type: string
+          format: email
+          description: User email address
+        createdAt:
+          type: string
+          format: date-time
+          description: Account creation timestamp
+
+    UserRequest:
+      type: object
+      description: User creation request
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email

@@ -85,6 +85,8 @@ YAML形式で定義した **カラム単位のデータリネージ情報** を 
 | **⚡ シンプル構文**             | `from`, `to`, `transform` の3要素だけで定義可能。                                                     |
 | **🏗️ 階層モデル対応**           | モデルを入れ子にして階層構造を表現可能(例: Domain → ValueObject)。                                   |
 | **📁 CSV対応**                  | モデル定義をCSVファイルから読み込み可能。大規模モデル管理に最適。                                    |
+| **🌐 OpenAPI対応**              | OpenAPI 3.x仕様からスキーマ定義を読み込み可能。API設計書との同期が容易。                              |
+| **📡 AsyncAPI対応**             | AsyncAPI 2.x/3.x仕様からメッセージ定義を読み込み可能。イベント駆動設計に最適。                        |
 | **🎯 フィールドフィルタリング** | CSV読み込み時、使用フィールドのみ表示。大規模CSV(50+フィールド)でも図がシンプル。                    |
 | **🔗 モデル参照**               | モデル全体からフィールドへの参照をサポート(例: `Money → TransactionDomain.money`)。                  |
 | **🔢 モデルインスタンス**       | 同じ型の複数インスタンスを表現可能(例: `Money#jpy`, `Money#usd`)。1つのCSVで複数インスタンスに対応。 |
@@ -111,6 +113,20 @@ python lineage_to_md.py data/event-driven-csv.yml data/output/output.md \
   --program-model-dirs data/レイアウト \
   --datastore-model-dirs data/テーブル定義
 
+# OpenAPIモデル読み込み
+python lineage_to_md.py data/api_example.yml data/output/output.md \
+  --openapi-specs data/openapi/user-api.yaml
+
+# AsyncAPIモデル読み込み
+python lineage_to_md.py data/api_example.yml data/output/output.md \
+  --asyncapi-specs data/asyncapi/user-events.yaml
+
+# 複数ソース統合 (CSV + OpenAPI + AsyncAPI)
+python lineage_to_md.py data/api_example.yml data/output/output.md \
+  --program-model-dirs data/レイアウト \
+  --openapi-specs data/openapi/user-api.yaml \
+  --asyncapi-specs data/asyncapi/user-events.yaml
+
 # CSVモデル読み込み (全フィールド表示)
 python lineage_to_md.py data/event-driven-csv.yml data/output/output.md \
   --program-model-dirs data/レイアウト \
@@ -124,6 +140,8 @@ python lineage_to_md.py data/event-driven-csv.yml data/output/output.md \
 | ------------------------ | ------ | ----------------------------------------------------------------- |
 | `--program-model-dirs`   | `-p`   | programタイプのCSVモデルが格納されたディレクトリ(複数指定可)      |
 | `--datastore-model-dirs` | `-d`   | datastoreタイプのCSVモデルが格納されたディレクトリ(複数指定可)    |
+| `--openapi-specs`        | `-o`   | OpenAPI仕様ファイル (YAML/JSON形式) (複数指定可)                   |
+| `--asyncapi-specs`       | `-a`   | AsyncAPI仕様ファイル (YAML/JSON形式) (複数指定可)                  |
 | `--show-all-props`       | なし   | CSV読み込み時に全プロパティを表示(デフォルトは使用フィールドのみ) |
 
 **使用例:**
@@ -146,6 +164,7 @@ python lineage_to_md.py data/lineage.yml output.md \
 | **event-driven-csv.yml**     | CSV + モデル参照          | CSV読み込み、モデル→フィールド参照     | DDD + Kafka                   |
 | **instance_example.yml**     | モデルインスタンス (YAML) | 同じ型の複数インスタンス、モデル参照   | 複数通貨の金額管理            |
 | **instance_csv_example.yml** | モデルインスタンス (CSV)  | CSV読み込み + インスタンス             | 複数通貨の金額管理 (CSV使用)  |
+| **api_example.yml**          | OpenAPI + AsyncAPI        | API仕様からモデル読み込み              | API → イベント → DB           |
 | **etl-pipeline.yml**         | 1カラム→複数カラム        | 1:N マッピング、ETL多段階処理          | データレイク/DWH パイプライン |
 
 #### 個別生成
@@ -167,6 +186,11 @@ python lineage_to_md.py data/instance_example.yml data/output/instance_example.m
 # モデルインスタンス（CSV読み込み）
 python lineage_to_md.py data/instance_csv_example.yml data/output/instance_csv_example.md \
   -p data/レイアウト
+
+# OpenAPI + AsyncAPI
+python lineage_to_md.py data/api_example.yml data/output/api_example.md \
+  -o data/openapi/user-api.yaml \
+  -a data/asyncapi/user-events.yaml
 
 # ETLパイプライン
 python lineage_to_md.py data/etl-pipeline.yml data/output/etl-pipeline.md
