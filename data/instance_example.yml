@@ -1,0 +1,40 @@
+spec: lineage-v1
+
+models:
+  - name: HttpRequest
+    type: program
+    props: [amount_jpy, amount_usd, user_id]
+
+  - name: Money
+    type: program
+    props: [amount, currency]
+
+  - name: Transaction
+    type: datastore
+    props: [id, user_id, amount_jpy, amount_usd]
+
+lineage:
+  # 1つ目のMoneyインスタンス (jpy)
+  - from: HttpRequest.amount_jpy
+    to: Money#jpy.amount
+  - from: JP
+    to: Money#jpy.currency
+
+  # 2つ目のMoneyインスタンス (usd)
+  - from: HttpRequest.amount_usd
+    to: Money#usd.amount
+  - from: US
+    to: Money#usd.currency
+
+  # インスタンス全体からフィールドへのマッピング
+  - from: Money#jpy
+    to: Transaction.amount_jpy
+    transform: "save JPY amount"
+
+  - from: Money#usd
+    to: Transaction.amount_usd
+    transform: "save USD amount"
+
+  # 通常のフィールドマッピング
+  - from: HttpRequest.user_id
+    to: Transaction.user_id

@@ -3,7 +3,8 @@
     "allow": [
       "Bash(python lineage_to_md.py:*)",
       "Bash(md-mermaid-lint:*)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(jsonschema:*)"
     ],
     "deny": [],
     "ask": []

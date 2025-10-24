@@ -1,3 +1,3 @@
-論理名,物理名,データ型,サイズ,キー,説明
-金額,amount,DECIMAL,"10,2",,金額
-通貨,currency,VARCHAR,3,,通貨コード(ISO 4217)
+論理名,物理名,データ型
+金額,amount,Decimal
+通貨,currency,String

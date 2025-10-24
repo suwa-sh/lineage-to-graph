@@ -29,7 +29,7 @@
         "required": ["from", "to"],
         "properties": {
           "from": {
-            "description": "Source(s). Each token is either a model field (format: Model.field) or a literal string (e.g., JP, now()).",
+            "description": "Source(s). Each token can be: a model field (Model.field), a model instance field (Model#instance.field), a model reference (Model), a model instance reference (Model#instance), or a literal string (e.g., JP, now()).",
             "oneOf": [
               {
                 "type": "string",
@@ -49,8 +49,7 @@
           "to": {
             "type": "string",
             "minLength": 1,
-            "pattern": "^[^.]+\\.[^\\s]+$",
-            "description": "Required target field in model.field form."
+            "description": "Required target. Can be: Model.field, Model#instance.field, Model, or Model#instance."
           },
           "transform": {
             "type": "string",
@@ -144,6 +143,23 @@
         { "from": "TransactionEntity.amount", "to": "transactions.amount" }
       ],
       "$comment": "CSV-based example: models loaded from CSV files using --program-model-dirs and --datastore-model-dirs"
+    },
+    {
+      "spec": "lineage-v1",
+      "models": [
+        { "name": "HttpRequest", "type": "program", "props": ["amount_jpy", "amount_usd"] },
+        { "name": "Money", "type": "program", "props": ["amount", "currency"] },
+        { "name": "Transaction", "type": "datastore", "props": ["amount_jpy", "amount_usd"] }
+      ],
+      "lineage": [
+        { "from": "HttpRequest.amount_jpy", "to": "Money#jpy.amount" },
+        { "from": "JP", "to": "Money#jpy.currency" },
+        { "from": "HttpRequest.amount_usd", "to": "Money#usd.amount" },
+        { "from": "US", "to": "Money#usd.currency" },
+        { "from": "Money#jpy", "to": "Transaction.amount_jpy", "transform": "save JPY amount" },
+        { "from": "Money#usd", "to": "Transaction.amount_usd", "transform": "save USD amount" }
+      ],
+      "$comment": "Model instance example: Same Money model used with different instances (#jpy, #usd)"
     }
   ]
 }

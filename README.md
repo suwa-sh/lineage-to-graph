@@ -79,15 +79,16 @@ YAML形式で定義した **カラム単位のデータリネージ情報** を 
 
 ### 機能
 
-| 機能                           | 説明                                                                                |
-| ------------------------------ | ----------------------------------------------------------------------------------- |
-| **📜 YAML定義 → Mermaid変換**   | 各モデルとカラム、変換関係を記述したYAMLをMarkdownに変換。                          |
-| **⚡ シンプル構文**             | `from`, `to`, `transform` の3要素だけで定義可能。                                   |
-| **🏗️ 階層モデル対応**           | モデルを入れ子にして階層構造を表現可能(例: Domain → ValueObject)。                  |
-| **📁 CSV対応**                  | モデル定義をCSVファイルから読み込み可能。大規模モデル管理に最適。                   |
-| **🎯 フィールドフィルタリング** | CSV読み込み時、使用フィールドのみ表示。大規模CSV(50+フィールド)でも図がシンプル。   |
-| **🔗 モデル参照**               | モデル全体からフィールドへの参照をサポート(例: `Money → TransactionDomain.money`)。 |
-| **🧱 JSON Schema 準拠**         | `schema.json` によるバリデーション可能。                                            |
+| 機能                           | 説明                                                                                                  |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| **📜 YAML定義 → Mermaid変換**   | 各モデルとカラム、変換関係を記述したYAMLをMarkdownに変換。                                           |
+| **⚡ シンプル構文**             | `from`, `to`, `transform` の3要素だけで定義可能。                                                     |
+| **🏗️ 階層モデル対応**           | モデルを入れ子にして階層構造を表現可能(例: Domain → ValueObject)。                                   |
+| **📁 CSV対応**                  | モデル定義をCSVファイルから読み込み可能。大規模モデル管理に最適。                                    |
+| **🎯 フィールドフィルタリング** | CSV読み込み時、使用フィールドのみ表示。大規模CSV(50+フィールド)でも図がシンプル。                    |
+| **🔗 モデル参照**               | モデル全体からフィールドへの参照をサポート(例: `Money → TransactionDomain.money`)。                  |
+| **🔢 モデルインスタンス**       | 同じ型の複数インスタンスを表現可能(例: `Money#jpy`, `Money#usd`)。1つのCSVで複数インスタンスに対応。 |
+| **🧱 JSON Schema 準拠**         | `schema.json` によるバリデーション可能。                                                             |
 
 ### 利用方法
 
@@ -138,12 +139,14 @@ python lineage_to_md.py data/lineage.yml output.md \
 
 ### サンプル
 
-| サンプル                 | 説明                 | カバーする機能                         | ユースケース                  |
-| ------------------------ | -------------------- | -------------------------------------- | ----------------------------- |
-| **sample.yml**           | 最もシンプルな基本例 | フィールド間のマッピング、リテラル値   | REST API → RDB の基本フロー   |
-| **event-driven.yml**     | 多くの機能を網羅     | 階層構造、複数ソース、変換、多段階処理 | DDD + Kafka                   |
-| **event-driven-csv.yml** | CSV + モデル参照     | CSV読み込み、モデル→フィールド参照     | DDD + Kafka                   |
-| **etl-pipeline.yml**     | 1カラム→複数カラム   | 1:N マッピング、ETL多段階処理          | データレイク/DWH パイプライン |
+| サンプル                     | 説明                      | カバーする機能                         | ユースケース                  |
+| ---------------------------- | ------------------------- | -------------------------------------- | ----------------------------- |
+| **sample.yml**               | 最もシンプルな基本例      | フィールド間のマッピング、リテラル値   | REST API → RDB の基本フロー   |
+| **event-driven.yml**         | 多くの機能を網羅          | 階層構造、複数ソース、変換、多段階処理 | DDD + Kafka                   |
+| **event-driven-csv.yml**     | CSV + モデル参照          | CSV読み込み、モデル→フィールド参照     | DDD + Kafka                   |
+| **instance_example.yml**     | モデルインスタンス (YAML) | 同じ型の複数インスタンス、モデル参照   | 複数通貨の金額管理            |
+| **instance_csv_example.yml** | モデルインスタンス (CSV)  | CSV読み込み + インスタンス             | 複数通貨の金額管理 (CSV使用)  |
+| **etl-pipeline.yml**         | 1カラム→複数カラム        | 1:N マッピング、ETL多段階処理          | データレイク/DWH パイプライン |
 
 #### 個別生成
 
@@ -157,6 +160,13 @@ python lineage_to_md.py data/event-driven.yml data/output/event-driven.md
 # CSV + モデル参照 (使用フィールドのみ)
 python lineage_to_md.py data/event-driven-csv.yml data/output/event-driven-csv.md \
   -p data/レイアウト -d data/テーブル定義
+
+# モデルインスタンス（YAML定義）
+python lineage_to_md.py data/instance_example.yml data/output/instance_example.md
+
+# モデルインスタンス（CSV読み込み）
+python lineage_to_md.py data/instance_csv_example.yml data/output/instance_csv_example.md \
+  -p data/レイアウト
 
 # ETLパイプライン
 python lineage_to_md.py data/etl-pipeline.yml data/output/etl-pipeline.md

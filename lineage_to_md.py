@@ -90,8 +90,47 @@ def load_model_from_csv(csv_path: str, model_type: str) -> Optional[Dict[str, An
         print(f"Error loading CSV '{csv_path}': {e}", file=sys.stderr)
         return None
 
+def parse_reference(ref: str) -> Tuple[str, Optional[str], Optional[str]]:
+    """Parse a reference string into model, instance, and field components.
+
+    Supports:
+    - 'Model.field' → ('Model', None, 'field')
+    - 'Model#instance.field' → ('Model', 'instance', 'field')
+    - 'Model' → ('Model', None, None)
+    - 'Model#instance' → ('Model', 'instance', None)
+
+    Args:
+        ref: Reference string
+
+    Returns:
+        Tuple of (model_name, instance_id, field_name)
+        Any component can be None if not present
+    """
+    # Check for instance identifier '#'
+    if '#' in ref:
+        # Split on '#' first
+        model_part, rest = ref.split('#', 1)
+
+        # Check if there's a field after the instance
+        if '.' in rest:
+            instance, field = rest.split('.', 1)
+            return (model_part, instance, field)
+        else:
+            # Just model#instance, no field
+            return (model_part, rest, None)
+    else:
+        # No instance identifier
+        if '.' in ref:
+            model, field = ref.split('.', 1)
+            return (model, None, field)
+        else:
+            # Just model name
+            return (ref, None, None)
+
 def extract_referenced_models(lineage: List[Dict[str, Any]]) -> Set[str]:
     """Extract all model names referenced in lineage definitions.
+
+    Strips instance identifiers to get the base model names for CSV loading.
 
     Args:
         lineage: List of lineage entries with 'from' and 'to' fields
@@ -112,41 +151,88 @@ def extract_referenced_models(lineage: List[Dict[str, Any]]) -> Set[str]:
             from_list = []
 
         for ref in from_list:
-            if '.' in ref:  # Field reference like 'Model.field'
-                model_name = ref.split('.')[0]
-                models.add(model_name)
-            else:
-                # Could be a model-level reference (e.g., 'Money')
-                # Add it to the set - we'll check if it's a real model later
-                models.add(ref)
+            model, instance, field = parse_reference(ref)
+            if model:
+                models.add(model)
 
         # Extract from 'to' field
         to_val = entry.get('to', '')
-        if '.' in to_val:
-            model_name = to_val.split('.')[0]
-            models.add(model_name)
-        elif to_val:
-            # Could be a model-level reference
-            models.add(to_val)
+        if to_val:
+            model, instance, field = parse_reference(to_val)
+            if model:
+                models.add(model)
 
     return models
+
+def extract_model_instances(lineage: List[Dict[str, Any]]) -> Dict[str, Set[str]]:
+    """Extract all model instances referenced in lineage definitions.
+
+    Args:
+        lineage: List of lineage entries with 'from' and 'to' fields
+
+    Returns:
+        Dict mapping model names to sets of instance identifiers
+        Example: {'Money': {'jpy', 'usd'}, 'Transaction': set()}
+        Empty set means model is used without instance identifiers
+    """
+    from collections import defaultdict
+    instances: Dict[str, Set[str]] = defaultdict(set)
+
+    for entry in lineage:
+        # Process 'from' field (can be string or list)
+        from_val = entry.get('from')
+        if isinstance(from_val, str):
+            from_list = [from_val]
+        elif isinstance(from_val, list):
+            from_list = from_val
+        else:
+            from_list = []
+
+        for ref in from_list:
+            model, instance, field = parse_reference(ref)
+            if model and instance:
+                instances[model].add(instance)
+            elif model and not instance:
+                # Model without instance - mark with empty set
+                if model not in instances:
+                    instances[model] = set()
+
+        # Process 'to' field
+        to_val = entry.get('to', '')
+        if to_val:
+            model, instance, field = parse_reference(to_val)
+            if model and instance:
+                instances[model].add(instance)
+            elif model and not instance:
+                if model not in instances:
+                    instances[model] = set()
+
+    return dict(instances)
 
 def extract_referenced_fields(lineage: List[Dict[str, Any]], yaml_models: List[Dict[str, Any]]) -> Dict[str, Set[str]]:
     """Extract all fields referenced in lineage definitions.
 
     This function analyzes lineage entries to determine which fields are actually used.
     It handles:
-    - Direct field references (e.g., 'Model.field')
-    - Model-level references (e.g., 'Model' without field -> all fields in that model)
+    - Direct field references (e.g., 'Model.field', 'Model#instance.field')
+    - Model-level references (e.g., 'Model', 'Model#instance' -> all fields in that model)
     - Nested model references (e.g., 'Parent.Child.field')
+
+    For models with instances, fields are tracked per instance:
+    - 'Money#jpy': {'amount', 'currency'}
+    - 'Money#usd': {'amount'}
 
     Args:
         lineage: List of lineage entries with 'from' and 'to' fields
         yaml_models: List of model definitions from YAML (to identify model-level references)
 
     Returns:
-        Dict mapping model paths to sets of field names that are actually used
-        Example: {'HttpRequest': {'amount', 'user_id'}, 'TransactionDomain': {'id', 'money'}}
+        Dict mapping model paths (with optional instance) to sets of field names
+        Example: {
+            'HttpRequest': {'amount', 'user_id'},
+            'Money#jpy': {'amount', 'currency'},
+            'Money#usd': {'amount'}
+        }
     """
     used_fields: Dict[str, Set[str]] = {}
 
@@ -168,37 +254,33 @@ def extract_referenced_fields(lineage: List[Dict[str, Any]], yaml_models: List[D
         """Add a field reference to the used_fields dictionary.
 
         Args:
-            ref: Reference string (can be 'Model', 'Model.field', or 'Model.Child.field')
+            ref: Reference string (can be 'Model', 'Model#instance', 'Model.field', 'Model#instance.field')
             is_from: True if this is a 'from' reference, False if 'to'
         """
-        # Check if it's a model-level reference (no dot or matches a known nested model)
-        if ref in known_models:
-            # Model-level reference: mark all fields in this model as used
-            # We'll handle this by adding a special marker
-            if ref not in used_fields:
-                used_fields[ref] = set(['*'])  # '*' means all fields
+        model, instance, field = parse_reference(ref)
+
+        # Build the tracking key (model path with optional instance)
+        if instance:
+            tracking_key = f"{model}#{instance}"
+        else:
+            tracking_key = model
+
+        # Check if it's a model-level reference (no field specified)
+        if field is None:
+            # Model-level reference: mark all fields in this model/instance as used
+            if tracking_key not in used_fields:
+                used_fields[tracking_key] = set(['*'])  # '*' means all fields
             else:
-                used_fields[ref].add('*')
+                used_fields[tracking_key].add('*')
             return
 
-        # Check if it's a field reference
-        if '.' in ref:
-            parts = ref.split('.')
+        # It's a field reference
+        if tracking_key not in used_fields:
+            used_fields[tracking_key] = set()
 
-            # Try to identify the model path and field name
-            # The field is always the last part
-            field_name = parts[-1]
-
-            # The model path is everything before the field
-            model_path = '.'.join(parts[:-1])
-
-            # Add this field to the used fields set
-            if model_path not in used_fields:
-                used_fields[model_path] = set()
-
-            # Don't add field if we already marked all fields with '*'
-            if '*' not in used_fields[model_path]:
-                used_fields[model_path].add(field_name)
+        # Don't add field if we already marked all fields with '*'
+        if '*' not in used_fields[tracking_key]:
+            used_fields[tracking_key].add(field)
 
     # Process all lineage entries
     for entry in lineage:
@@ -212,14 +294,17 @@ def extract_referenced_fields(lineage: List[Dict[str, Any]], yaml_models: List[D
             from_list = []
 
         for ref in from_list:
-            # Skip literal values (things without dots that aren't known models)
-            if '.' in ref or ref in known_models:
+            model, instance, field = parse_reference(ref)
+            # Skip literal values (no model or field, and not in known models)
+            if model and (field is not None or model in known_models or instance is not None):
                 add_field(ref, is_from=True)
 
         # Process 'to' field
         to_val = entry.get('to', '')
-        if to_val and ('.' in to_val or to_val in known_models):
-            add_field(to_val, is_from=False)
+        if to_val:
+            model, instance, field = parse_reference(to_val)
+            if model and (field is not None or model in known_models or instance is not None):
+                add_field(to_val, is_from=False)
 
     return used_fields
 
@@ -296,19 +381,25 @@ def parse_models_recursive(
     field_node_ids: Optional[Dict[str, str]] = None,
     model_hierarchy: Optional[Dict[str, Dict[str, Any]]] = None,
     used_fields: Optional[Dict[str, Set[str]]] = None,
-    csv_model_names: Optional[Set[str]] = None
+    csv_model_names: Optional[Set[str]] = None,
+    model_instances: Optional[Dict[str, Set[str]]] = None,
+    parent_instance: str = ""
 ) -> Tuple[Dict[str, str], Dict[str, List[Tuple[str, str]]], Dict[str, str], Dict[str, Dict[str, Any]]]:
     """Recursively parse models and their children to build model hierarchy.
+
+    Supports model instances via '#' notation (e.g., 'Money#jpy', 'Money#usd').
 
     Args:
         models: List of model definitions
         parent_prefix: Parent model path (for nested models)
-        model_types: Dict mapping model paths to their types
-        field_nodes_by_model: Dict mapping model paths to field nodes
-        field_node_ids: Dict mapping field references to node IDs
+        model_types: Dict mapping model paths (with instance) to their types
+        field_nodes_by_model: Dict mapping model paths (with instance) to field nodes
+        field_node_ids: Dict mapping field references (with instance) to node IDs
         model_hierarchy: Dict storing parent-child relationships
-        used_fields: Dict mapping model paths to sets of actually used field names (for filtering)
+        used_fields: Dict mapping model paths (with instance) to sets of actually used field names
         csv_model_names: Set of model names loaded from CSV (only these will be filtered)
+        model_instances: Dict mapping model names to sets of instance identifiers
+        parent_instance: Instance identifier from parent model
 
     Returns:
         Tuple of (model_types, field_nodes_by_model, field_node_ids, model_hierarchy)
@@ -321,6 +412,8 @@ def parse_models_recursive(
         field_node_ids = {}
     if model_hierarchy is None:
         model_hierarchy = {}
+    if model_instances is None:
+        model_instances = {}
 
     for m in models:
         name = m["name"]
@@ -328,46 +421,74 @@ def parse_models_recursive(
         props = m.get("props", [])
         children = m.get("children", [])
 
-        # Build full model path
+        # Build full model path (without instance)
         full_model_path = f"{parent_prefix}.{name}" if parent_prefix else name
-        model_types[full_model_path] = mtype
 
-        # Store hierarchy info
-        model_hierarchy[full_model_path] = {
-            'parent': parent_prefix if parent_prefix else None,
-            'children': [f"{full_model_path}.{c['name']}" for c in children] if children else []
-        }
+        # Get instances for this model (empty set means no instances)
+        instances = model_instances.get(name, set())
 
-        # Determine if we should filter fields for this model
-        should_filter = (
-            used_fields is not None and
-            csv_model_names is not None and
-            name in csv_model_names and
-            full_model_path in used_fields
-        )
+        # If this model has no instances, treat it as a single default instance
+        if not instances:
+            instances = {None}
 
-        # Parse fields
-        nodes = []
-        for p in props:
-            # Apply filtering if applicable
-            if should_filter:
-                # Check if this field is actually used
-                model_used_fields = used_fields.get(full_model_path, set())
-                # '*' means all fields, otherwise check if field is in the set
-                if '*' not in model_used_fields and p not in model_used_fields:
-                    # Skip this field as it's not used in lineage
-                    continue
+        # Process each instance of this model
+        for instance in instances:
+            # Build instance-specific paths
+            if instance:
+                instance_path = f"{full_model_path}#{instance}"
+                instance_id_part = f"_{instance}"
+            else:
+                instance_path = full_model_path
+                instance_id_part = ""
 
-            nid = slug(f"{full_model_path}_{p}".replace(".", "_"))
-            nodes.append((nid, str(p)))
-            field_node_ids[f"{full_model_path}.{p}"] = nid
-        field_nodes_by_model[full_model_path] = nodes
+            model_types[instance_path] = mtype
 
-        # Recursively parse children
+            # Store hierarchy info
+            model_hierarchy[instance_path] = {
+                'parent': parent_prefix if parent_prefix else None,
+                'children': [f"{full_model_path}.{c['name']}" for c in children] if children else [],
+                'instance': instance
+            }
+
+            # Determine if we should filter fields for this model instance
+            should_filter = (
+                used_fields is not None and
+                csv_model_names is not None and
+                name in csv_model_names and
+                instance_path in used_fields
+            )
+
+            # Parse fields
+            nodes = []
+            for p in props:
+                # Apply filtering if applicable
+                if should_filter:
+                    # Check if this field is actually used
+                    model_used_fields = used_fields.get(instance_path, set())
+                    # '*' means all fields, otherwise check if field is in the set
+                    if '*' not in model_used_fields and p not in model_used_fields:
+                        # Skip this field as it's not used in lineage
+                        continue
+
+                # Generate node ID with instance
+                nid = slug(f"{full_model_path}{instance_id_part}_{p}".replace(".", "_"))
+                nodes.append((nid, str(p)))
+
+                # Map field reference to node ID
+                if instance:
+                    field_ref = f"{full_model_path}#{instance}.{p}"
+                else:
+                    field_ref = f"{full_model_path}.{p}"
+                field_node_ids[field_ref] = nid
+
+            field_nodes_by_model[instance_path] = nodes
+
+        # Recursively parse children (children inherit parent's instance if any)
         if children:
             parse_models_recursive(
                 children, full_model_path, model_types, field_nodes_by_model,
-                field_node_ids, model_hierarchy, used_fields, csv_model_names
+                field_node_ids, model_hierarchy, used_fields, csv_model_names,
+                model_instances, parent_instance
             )
 
     return model_types, field_nodes_by_model, field_node_ids, model_hierarchy
@@ -381,8 +502,10 @@ def generate_subgraph(
 ) -> List[str]:
     """Generate Mermaid subgraph with proper nesting.
 
+    Supports instance identifiers in model_path (e.g., 'Money#jpy').
+
     Args:
-        model_path: Full path of the model
+        model_path: Full path of the model (may include instance like 'Money#jpy')
         model_types: Dict mapping model paths to their types
         field_nodes_by_model: Dict mapping model paths to field nodes
         model_hierarchy: Dict storing parent-child relationships
@@ -395,12 +518,18 @@ def generate_subgraph(
     spaces = "  " * indent
     mtype = model_types.get(model_path, 'datastore')
 
-    # Get just the last part of the model path for display
-    model_display_name = model_path.split(".")[-1]
+    # Extract base model name and instance from model_path
+    if '#' in model_path:
+        base_path, instance = model_path.rsplit('#', 1)
+        model_display_name = base_path.split(".")[-1]
+        display_label = f'"{model_display_name} ({instance})"'
+    else:
+        model_display_name = model_path.split(".")[-1]
+        display_label = model_display_name
 
     # Generate subgraph header
-    subgraph_id = slug(model_path.replace(".", "_"))
-    lines.append(f"{spaces}subgraph {subgraph_id}[{model_display_name}]")
+    subgraph_id = slug(model_path.replace(".", "_").replace("#", "_"))
+    lines.append(f"{spaces}subgraph {subgraph_id}[{display_label}]")
 
     # Add fields for this model
     nodes = field_nodes_by_model.get(model_path, [])
@@ -478,6 +607,9 @@ def main(
             if still_missing:
                 print(f"Info: The following values will be treated as literals (not found as models in YAML or CSV): {', '.join(sorted(still_missing))}", file=sys.stderr)
 
+    # Extract model instances from lineage
+    model_instances = extract_model_instances(lineage)
+
     # Extract used fields from lineage (for filtering CSV models)
     used_fields = None
     if not show_all_props and csv_model_names:
@@ -490,7 +622,8 @@ def main(
     model_types, field_nodes_by_model, field_node_ids, model_hierarchy = parse_models_recursive(
         models,
         used_fields=used_fields,
-        csv_model_names=csv_model_names
+        csv_model_names=csv_model_names,
+        model_instances=model_instances
     )
 
     lines = [
@@ -520,11 +653,12 @@ def main(
         return nid
 
     def is_model_field(token: str) -> bool:
-        return "." in token and token in field_node_ids
+        """Check if token is a field reference (may include instance like 'Model#instance.field')"""
+        return token in field_node_ids
 
     def is_model_reference(token: str) -> bool:
-        """Check if token is a model reference (can include dots for nested models)"""
-        # Check if it's a known model path (including nested like Parent.Child)
+        """Check if token is a model reference (may include instance like 'Model#instance')"""
+        # Check if it's a known model path (including instance)
         return token in model_types
 
     # Track which model references need style overrides
@@ -535,16 +669,16 @@ def main(
         if not to_ref: continue
 
         # Determine target: field reference or model reference
-        if "." in to_ref:
-            # Field reference: Model.field
-            t_model, t_field = parse_field(to_ref)
-            t_id = field_node_ids.get(f"{t_model}.{t_field}")
-        else:
+        # Check field reference first (most specific)
+        if is_model_field(to_ref):
+            # Direct field reference
+            t_id = field_node_ids[to_ref]
+        elif is_model_reference(to_ref):
             # Model reference: use subgraph ID
-            if to_ref not in model_types:
-                print(f"Warning: Unknown model reference '{to_ref}' in lineage", file=sys.stderr)
-                continue
-            t_id = slug(to_ref.replace(".", "_"))
+            t_id = slug(to_ref.replace(".", "_").replace("#", "_"))
+        else:
+            print(f"Warning: Unknown reference '{to_ref}' in lineage", file=sys.stderr)
+            continue
 
         srcs = e.get("from")
         if isinstance(srcs, str): srcs = [srcs]
@@ -555,7 +689,7 @@ def main(
             # Check model reference first (before field) to handle nested models correctly
             if is_model_reference(src):
                 # Model reference: use subgraph ID as node (creates implicit node)
-                s_id = slug(src.replace(".", "_"))
+                s_id = slug(src.replace(".", "_").replace("#", "_"))
                 # Track this model reference for style override
                 if src not in model_ref_styles:
                     model_ref_styles[src] = model_types[src]
@@ -575,7 +709,7 @@ def main(
     if model_ref_styles:
         lines.append("")
         for model_ref, model_type in model_ref_styles.items():
-            node_id = slug(model_ref.replace(".", "_"))
+            node_id = slug(model_ref.replace(".", "_").replace("#", "_"))
             if model_type == "program":
                 lines.append(f'  style {node_id} fill:#E3F2FD,stroke:#1565C0,stroke-width:2px')
             else:  # datastore
