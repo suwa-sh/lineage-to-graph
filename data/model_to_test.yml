@@ -1,0 +1,30 @@
+spec: lineage-v1
+
+models:
+  - name: Source
+    type: program
+    props: [id, name, value]
+
+  - name: Target
+    type: program
+    props: [id, name, value]
+
+  - name: Database
+    type: datastore
+    props: [id, data]
+
+lineage:
+  # from にモデル全体 → to にフィールド
+  - from: Source
+    to: Target.id
+    transform: "model to field"
+
+  # from にフィールド → to にモデル全体
+  - from: Source.name
+    to: Target
+    transform: "field to model"
+
+  # from にモデル全体 → to にモデル全体
+  - from: Target
+    to: Database
+    transform: "model to model"

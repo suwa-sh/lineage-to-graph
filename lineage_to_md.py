@@ -979,6 +979,9 @@ def main(
         elif is_model_reference(to_ref):
             # Model reference: use subgraph ID
             t_id = slug(to_ref.replace(".", "_").replace("#", "_"))
+            # Track this model reference for style override
+            if to_ref not in model_ref_styles:
+                model_ref_styles[to_ref] = model_types[to_ref]
         else:
             print(f"Warning: Unknown reference '{to_ref}' in lineage", file=sys.stderr)
             continue
