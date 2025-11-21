@@ -64,7 +64,7 @@
     "modelDefinition": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "type", "props"],
+      "required": ["name", "type"],
       "properties": {
         "name": {
           "type": "string",
@@ -78,7 +78,7 @@
         },
         "props": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 0,
           "uniqueItems": true,
           "items": {
             "type": "string",

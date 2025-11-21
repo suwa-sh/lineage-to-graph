@@ -1,0 +1,41 @@
+spec: lineage-v1
+
+models:
+  - name: EmptyModel
+    type: program
+    # props省略
+
+  - name: ParentModel
+    type: program
+
+  - name: ParentModel2
+    type: program
+    props: [prop]
+
+  - name: EmptyDatastore
+    type: datastore
+
+  - name: EmptyDatastore2
+    type: datastore
+
+lineage:
+  # EmptyModelのフィールドを動的生成
+  - from: literal_value1
+    to: EmptyModel.field1
+  - from: literal_value2
+    to: EmptyModel.field2
+
+  # EmptyDatastoreのフィールドを動的生成
+  - from: EmptyModel.field1
+    to: EmptyDatastore.dataField1
+
+  # 階層構造の動的生成をテスト
+  # EmptyModel.Child.field の参照
+  - from: ParentModel.Child.nestedField
+    to: EmptyModel.Child.destField
+
+  - from: ParentModel2
+    to: EmptyModel.parent2
+
+  - from: EmptyModel
+    to: EmptyDatastore2
