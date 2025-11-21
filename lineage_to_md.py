@@ -476,6 +476,223 @@ def extract_referenced_fields(lineage: List[Dict[str, Any]], yaml_models: List[D
 
     return used_fields
 
+def create_dynamic_models_from_lineage(
+    lineage: List[Dict[str, Any]],
+    existing_models: List[Dict[str, Any]],
+    model_types: Dict[str, str]
+) -> List[Dict[str, Any]]:
+    """Create dynamic model definitions for models referenced in lineage but not defined in models.
+
+    This function enables users to define models with only name and type,
+    then have their fields automatically generated from lineage references.
+
+    Example:
+        models:
+          - name: EmptyModel
+            type: program
+            # props omitted
+
+        lineage:
+          - from: value
+            to: EmptyModel.field1
+          - from: another
+            to: EmptyModel.Child.field2
+
+        Result: EmptyModel will have field1, and a child model Child with field2
+
+    Args:
+        lineage: List of lineage entries
+        existing_models: List of existing model definitions from YAML
+        model_types: Dict of already registered model types (to detect defined models)
+
+    Returns:
+        List of new model definitions to be added (or updated existing models with props)
+    """
+    # Build a map of existing models for quick lookup
+    existing_model_map: Dict[str, Dict[str, Any]] = {}
+
+    def collect_existing_models(models: List[Dict[str, Any]], prefix: str = "") -> None:
+        """Recursively collect existing models into a map."""
+        for m in models:
+            model_path = f"{prefix}.{m['name']}" if prefix else m['name']
+            existing_model_map[model_path] = m
+            if 'children' in m:
+                collect_existing_models(m['children'], model_path)
+
+    collect_existing_models(existing_models)
+
+    # Track which models need dynamic field generation
+    # Format: {model_path: {field_names_set}}
+    dynamic_fields: Dict[str, Set[str]] = {}
+
+    def extract_field_references(ref: str) -> None:
+        """Extract field references from a lineage reference string.
+
+        Handles:
+        - 'Model.field' -> adds field to Model
+        - 'Model.Child.field' -> adds field to Model.Child (and creates Child if needed)
+        - 'Model#instance.field' -> adds field to Model
+        - 'Model' or 'literal' -> skip (model-level reference or literal)
+        """
+        # Skip literals and model-level references
+        if '.' not in ref:
+            return
+
+        # Check if root model exists in existing_model_map
+        # This prevents literals like "v1.0" from being treated as model references
+        root_model = ref.split('.')[0].split('#')[0]  # Extract root, remove instance if present
+        if root_model not in existing_model_map:
+            # Root model not defined → treat as literal, skip dynamic generation
+            return
+
+        # Handle instance notation: Model#instance.field -> Model.field
+        if '#' in ref:
+            # Remove instance part for model path extraction
+            ref_without_instance = ref.replace('#', '.').replace('..', '.')
+            parts = ref_without_instance.rsplit('.', 1)
+            if len(parts) == 2:
+                model_path_with_instance, field = parts
+                # Remove instance identifier from model path
+                model_path = model_path_with_instance.split('.')[0]
+
+                # Find the actual field name (last part after the last dot in original ref)
+                field = ref.split('.')[-1]
+        else:
+            # No instance: split normally
+            parts = ref.rsplit('.', 1)
+            if len(parts) != 2:
+                return
+            model_path, field = parts
+
+        # Try to traverse the full model path to see if it exists
+        check_parts = model_path.split('.')
+        current_models = existing_models
+        model_def = None
+
+        for i, part in enumerate(check_parts):
+            found = False
+            for m in current_models:
+                if m['name'] == part:
+                    model_def = m
+                    current_models = m.get('children', [])
+                    found = True
+                    break
+            if not found:
+                # This part of the path doesn't exist
+                # Note: If root model doesn't exist, we already returned at line 546-548
+                # So here, we know that a parent model exists but child doesn't
+                # Add to dynamic_fields for child creation
+                if model_path not in dynamic_fields:
+                    dynamic_fields[model_path] = set()
+                dynamic_fields[model_path].add(field)
+                return
+
+        # Full path exists, check if it has props
+        if model_def is not None:
+            if 'props' not in model_def or not model_def.get('props'):
+                if model_path not in dynamic_fields:
+                    dynamic_fields[model_path] = set()
+                dynamic_fields[model_path].add(field)
+
+    # Process all lineage entries
+    for entry in lineage:
+        # Process 'from' field (can be string or list)
+        from_val = entry.get('from')
+        if isinstance(from_val, str):
+            from_list = [from_val]
+        elif isinstance(from_val, list):
+            from_list = from_val
+        else:
+            from_list = []
+
+        for ref in from_list:
+            extract_field_references(ref)
+
+        # Process 'to' field
+        to_val = entry.get('to', '')
+        if to_val:
+            extract_field_references(to_val)
+
+    # Now update existing models with dynamic fields and create missing child models
+    models_to_update = []
+
+    for model_path, fields in dynamic_fields.items():
+        # Navigate to the model definition and add props
+        parts = model_path.split('.')
+        current_models = existing_models
+        model_def = None
+        parent_def = None
+        parent_type = 'program'  # Default type
+        missing_part_index = -1
+
+        for i, part in enumerate(parts):
+            found = False
+            for m in current_models:
+                if m['name'] == part:
+                    parent_def = model_def  # Remember parent before moving to child
+                    if model_def:
+                        parent_type = model_def.get('type', parent_type)
+                    model_def = m
+                    if i < len(parts) - 1:  # Not the last part, go deeper
+                        if 'children' not in m:
+                            m['children'] = []
+                        current_models = m['children']
+                    found = True
+                    break
+            if not found:
+                # Model part not found, need to create it
+                missing_part_index = i
+                break
+
+        if model_def is not None and missing_part_index < 0:
+            # Full model path exists, update its props
+            if 'props' not in model_def or not model_def.get('props'):
+                # Print info message
+                print(f"Info: モデル '{model_path}' はプロパティ未定義のため、lineage参照から動的生成します")
+                model_def['props'] = sorted(list(fields))
+        elif missing_part_index >= 0 or (model_def is not None and missing_part_index >= 0):
+            # Need to create missing child models
+            # Rebuild from where we left off
+            current_models = existing_models
+            model_def = None
+
+            for i in range(missing_part_index):
+                for m in current_models:
+                    if m['name'] == parts[i]:
+                        model_def = m
+                        parent_type = m.get('type', parent_type)
+                        if 'children' not in m:
+                            m['children'] = []
+                        current_models = m['children']
+                        break
+
+            # Now create the missing parts
+            for i in range(missing_part_index, len(parts)):
+                part = parts[i]
+                # Determine the full path for this model
+                created_path = '.'.join(parts[:i+1])
+
+                # Create new child model with inherited type
+                new_model = {
+                    'name': part,
+                    'type': parent_type,  # Inherit from parent
+                    'props': sorted(list(fields)) if i == len(parts) - 1 else []
+                }
+
+                # Add to parent's children
+                current_models.append(new_model)
+
+                # Print info message
+                print(f"Info: モデル '{created_path}' はプロパティ未定義のため、lineage参照から動的生成します")
+
+                # Prepare for next iteration
+                if i < len(parts) - 1:
+                    new_model['children'] = []
+                    current_models = new_model['children']
+
+    # Return empty list as we modified existing_models in place
+    return []
+
 def find_openapi_models(
     spec_files: List[str],
     required_models: Set[str],
@@ -912,6 +1129,21 @@ def main(
 
     # Extract model instances from lineage
     model_instances = extract_model_instances(lineage)
+
+    # Create dynamic fields for models without props
+    # This must be done before parse_models_recursive so the fields are available
+    # Build initial model_types for dynamic field generation
+    temp_model_types = {}
+    def build_model_types(model_list: List[Dict[str, Any]], prefix: str = "") -> None:
+        for m in model_list:
+            model_path = f"{prefix}.{m['name']}" if prefix else m['name']
+            temp_model_types[model_path] = m.get('type', 'datastore')
+            if 'children' in m:
+                build_model_types(m['children'], model_path)
+    build_model_types(models)
+
+    # Generate dynamic fields from lineage references
+    create_dynamic_models_from_lineage(lineage, models, temp_model_types)
 
     # Extract used fields from lineage (for filtering CSV models)
     used_fields = None

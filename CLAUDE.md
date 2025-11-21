@@ -164,7 +164,7 @@ end
 
 実際の使用例は [data/event-driven.yml](data/event-driven.yml) を参照してください。
 
-## モデル全体参照 (v4.0+)
+## モデル全体参照
 
 ### 概要
 
@@ -227,7 +227,7 @@ graph LR
 
 実際の使用例は [data/model_to_field_example.yml](data/model_to_field_example.yml) を参照してください。
 
-## CSVからのモデル読み込み (v3.0+)
+## CSVからのモデル読み込み
 
 ### 概要
 
@@ -336,7 +336,7 @@ python lineage_to_md.py sample.yml output.md
 
 実際の使用例は [data/event-driven-csv.yml](data/event-driven-csv.yml) を参照してください。
 
-## CSVモデルのフィールドフィルタリング (v5.0+)
+## CSVモデルのフィールドフィルタリング
 
 ### 概要
 
@@ -447,14 +447,154 @@ end
 - フィルタリング有効版: [data/output/event-driven-csv_filtered.md](data/output/event-driven-csv_filtered.md)
 - 全プロパティ版: [data/output/event-driven-csv_all_props.md](data/output/event-driven-csv_all_props.md)
 
+## props省略可能化と動的フィールド生成
+
+### 概要
+
+YAML定義のモデルで`props`を省略可能にし、lineageで参照されたフィールドを自動的に生成します。これにより、モデルの骨格（name + type）だけを定義し、詳細なプロパティはlineageから逆算する柔軟な記述が可能になります。
+
+**重要**: この機能はYAML定義のモデルのみに適用されます。外部ファイル（CSV/OpenAPI/AsyncAPI）は従来通り、propsが空の場合は警告を出してスキップします。
+
+### 機能の特徴
+
+- **props省略**: modelsでname + typeのみ定義すればOK
+- **動的フィールド生成**: lineage参照から自動的にpropsを生成
+- **階層構造の自動作成**: 未定義の子モデルも動的に作成
+- **型の継承**: 子モデルは親のtypeを継承
+- **情報メッセージ**: 動的生成時にstdoutへメッセージ出力
+
+### スキーマの変更
+
+**schema.json**:
+
+- `required: ["name", "type"]` - `props`は不要
+- `minItems: 0` - 空配列も許可
+
+### 使用例
+
+#### ケース1: フラットなフィールド生成
+
+```yaml
+models:
+  - name: EmptyModel
+    type: program
+    # props省略
+
+lineage:
+  - from: literal_value1
+    to: EmptyModel.field1
+  - from: literal_value2
+    to: EmptyModel.field2
+```
+
+**実行時の出力**:
+
+```text
+Info: モデル 'EmptyModel' はプロパティ未定義のため、lineage参照から動的生成します
+```
+
+**生成されるMermaid**:
+
+```mermaid
+subgraph EmptyModel[EmptyModel]
+  EmptyModel_field1["field1"]:::property
+  EmptyModel_field2["field2"]:::property
+end
+class EmptyModel program_bg
+```
+
+#### ケース2: 階層構造の動的生成
+
+```yaml
+models:
+  - name: Parent
+    type: datastore
+    # props省略、childrenも未定義
+
+lineage:
+  - from: source_value
+    to: Parent.Child.nestedField
+```
+
+**実行時の出力**:
+
+```text
+Info: モデル 'Parent.Child' はプロパティ未定義のため、lineage参照から動的生成します
+```
+
+**生成されるMermaid**:
+
+```mermaid
+subgraph Parent[Parent]
+  subgraph Parent_Child[Child]
+    Parent_Child_nestedField["nestedField"]:::property
+  end
+  class Parent_Child datastore_bg
+end
+class Parent datastore_bg
+```
+
+→ `Parent`のtype（datastore）が`Child`に継承されます
+
+#### ケース3: 部分定義との混在
+
+```yaml
+models:
+  - name: MixedModel
+    type: program
+    props: [existingField]  # 一部は明示定義
+
+lineage:
+  - from: value1
+    to: MixedModel.existingField
+  - from: value2
+    to: MixedModel.dynamicField  # 動的生成
+```
+
+→ `existingField`と`dynamicField`の両方が表示されます
+
+### ユースケース
+
+1. **プロトタイピング**: モデル構造が未確定でもリネージを先に定義
+2. **段階的な詳細化**: まずデータフローを記述し、後でプロパティを整理
+3. **軽量な定義**: 大量のモデルを扱う際、必要最小限の情報だけを記述
+4. **リバースエンジニアリング**: 既存のデータフロー図からモデル定義を逆算
+
+### 実装詳細
+
+- **動的生成関数** ([lineage_to_md.py:479-705](lineage_to_md.py#L479-L705))
+  - `create_dynamic_models_from_lineage()`: lineageからフィールド参照を抽出し、モデルを更新
+  - 既存モデルのprops更新と、未定義子モデルの作成を実施
+  - 親のtypeを子に継承
+- **メイン処理での統合** ([lineage_to_md.py:1096-1109](lineage_to_md.py#L1096-L1109))
+  - `parse_models_recursive()`の前に動的生成を実行
+  - 生成後のモデル定義を通常のパース処理に渡す
+
+### 外部ファイルとの違い
+
+| 項目 | YAML定義モデル | CSV/OpenAPI/AsyncAPI |
+|------|---------------|----------------------|
+| props省略 | ✅ 可能 | ❌ 不可 |
+| 動的生成 | ✅ 実行される | ❌ 実行されない |
+| 空props時の動作 | lineageから生成 | 警告を出してスキップ |
+
+### 動的生成サンプル
+
+実際の使用例:
+
+- フラット構造: [data/test-dynamic-fields.yml](data/test-dynamic-fields.yml)
+- 階層構造: [data/test-nested-dynamic.yml](data/test-nested-dynamic.yml)
+
 ## 実装時の注意点
 
 ### 新機能追加時
+
 - `slug()`関数を使用してMermaid識別子を生成し、構文エラーを防ぐ
 - `field_node_ids`辞書を使用して既存フィールド参照を解決
 - リテラル値は`ensure_literal()`で重複を避けながら動的生成
 - 新しいモデルタイプを追加する場合はCSSクラス定義も追加 ([lineage_to_md.py:41-43](lineage_to_md.py#L41-L43))
 
 ### スキーマ拡張時
+
 - [schema.json](schema.json) の`enum`値を更新(例: 新しい`type`)
 - `examples`セクションに使用例を追加して検証可能にする

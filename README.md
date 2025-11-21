@@ -2,60 +2,64 @@
 
 **Column-level Data Lineage Visualization Tools**
 
+- lineage.yml
+
+  ```yml
+  spec: lineage-v1
+
+  models:
+    - name: UserDto
+      type: program
+      props: [name, country]
+
+    - name: user_table
+      type: datastore
+      props: [name, country, load_timestamp]
+
+  lineage:
+    - { from: UserDto.name,    to: user_table.name }
+    - { from: UserDto.country, to: user_table.country, transform: toUpperCase }
+    - { from: JP,              to: user_table.country, transform: デフォルト値 }
+    - { from: now(),           to: user_table.load_timestamp, transform: as load_timestamp }
+  ```
+
+- output image
+
+  ```mermaid
+  graph LR
+    classDef program_bg fill:#E3F2FD,stroke:#1565C0,stroke-width:2px;
+    classDef datastore_bg fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px;
+    classDef property fill:#F5F5F5,stroke:#9E9E9E,stroke-width:1px,color:#424242;
+    classDef literal fill:#FFF3E0,stroke:#EF6C00,stroke-width:1px,color:#BF360C;
+
+      subgraph UserDto[UserDto]
+        UserDto_name["name"]:::property
+        UserDto_country["country"]:::property
+      end
+      class UserDto program_bg
+
+      subgraph user_table[user_table]
+        user_table_name["name"]:::property
+        user_table_country["country"]:::property
+        user_table_load_timestamp["load_timestamp"]:::property
+      end
+      class user_table datastore_bg
+
+    UserDto_name --> user_table_name
+    UserDto_country -->|"toUpperCase"| user_table_country
+    lit_JP["JP"]:::literal
+    lit_JP -->|"デフォルト値"| user_table_country
+    lit_now["now()"]:::literal
+    lit_now -->|"as load_timestamp"| user_table_load_timestamp
+  ```
+
 ## Schema定義
 
 [schema.json](./schema.json)
 
-```yml
-spec: lineage-v1
-
-models:
-  - name: UserDto
-    type: program
-    props: [name, country]
-
-  - name: user_table
-    type: datastore
-    props: [name, country, load_timestamp]
-
-lineage:
-  - { from: UserDto.name,    to: user_table.name }
-  - { from: UserDto.country, to: user_table.country, transform: toUpperCase }
-  - { from: JP,              to: user_table.country, transform: デフォルト値 }
-  - { from: now(),           to: user_table.load_timestamp, transform: as load_timestamp }
-```
-
-```mermaid
-graph LR
-  classDef program_bg fill:#E3F2FD,stroke:#1565C0,stroke-width:2px;
-  classDef datastore_bg fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px;
-  classDef property fill:#F5F5F5,stroke:#9E9E9E,stroke-width:1px,color:#424242;
-  classDef literal fill:#FFF3E0,stroke:#EF6C00,stroke-width:1px,color:#BF360C;
-
-    subgraph UserDto[UserDto]
-      UserDto_name["name"]:::property
-      UserDto_country["country"]:::property
-    end
-    class UserDto program_bg
-
-    subgraph user_table[user_table]
-      user_table_name["name"]:::property
-      user_table_country["country"]:::property
-      user_table_load_timestamp["load_timestamp"]:::property
-    end
-    class user_table datastore_bg
-
-  UserDto_name --> user_table_name
-  UserDto_country -->|"toUpperCase"| user_table_country
-  lit_JP["JP"]:::literal
-  lit_JP -->|"デフォルト値"| user_table_country
-  lit_now["now()"]:::literal
-  lit_now -->|"as load_timestamp"| user_table_load_timestamp
-```
-
 ## リポジトリ構成
 
-```
+```txt
 lineage-to-graph/
 ├── schema.json              # JSON Schema
 ├── requirements.txt         # Python依存関係
@@ -90,6 +94,7 @@ YAML形式で定義した **カラム単位のデータリネージ情報** を 
 | **🎯 フィールドフィルタリング** | CSV読み込み時、使用フィールドのみ表示。大規模CSV(50+フィールド)でも図がシンプル。                    |
 | **🔗 モデル参照**               | モデル全体からフィールドへの参照をサポート(例: `Money → TransactionDomain.money`)。                  |
 | **🔢 モデルインスタンス**       | 同じ型の複数インスタンスを表現可能(例: `Money#jpy`, `Money#usd`)。1つのCSVで複数インスタンスに対応。 |
+| **✨ props省略可能**             | YAML定義でmodel.propsを省略し、lineageから自動生成。プロトタイピングや段階的詳細化に最適。                 |
 | **🧱 JSON Schema 準拠**         | `schema.json` によるバリデーション可能。                                                             |
 
 ### 利用方法
@@ -163,9 +168,10 @@ python lineage_to_md.py data/lineage.yml output.md \
 | **event-driven.yml**         | 多くの機能を網羅          | 階層構造、複数ソース、変換、多段階処理 | DDD + Kafka                   |
 | **event-driven-csv.yml**     | CSV + モデル参照          | CSV読み込み、モデル→フィールド参照     | DDD + Kafka                   |
 | **instance_example.yml**     | モデルインスタンス (YAML) | 同じ型の複数インスタンス、モデル参照   | 複数通貨の金額管理            |
-| **instance_csv_example.yml** | モデルインスタンス (CSV)  | CSV読み込み + インスタンス             | 複数通貨の金額管理 (CSV使用)  |
-| **api_example.yml**          | OpenAPI + AsyncAPI        | API仕様からモデル読み込み              | API → イベント → DB           |
-| **etl-pipeline.yml**         | 1カラム→複数カラム        | 1:N マッピング、ETL多段階処理          | データレイク/DWH パイプライン |
+| **instance_csv_example.yml** | モデルインスタンス (CSV)      | CSV読み込み + インスタンス             | 複数通貨の金額管理 (CSV使用)  |
+| **api_example.yml**          | OpenAPI + AsyncAPI            | API仕様からモデル読み込み              | API → イベント → DB           |
+| **test-dynamic-fields.yml**  | props省略 + 動的生成           | 動的フィールド生成、階層構造自動作成   | プロトタイピング、軽量定義    |
+| **etl-pipeline.yml**         | 1カラム→複数カラム            | 1:N マッピング、ETL多段階処理          | データレイク/DWH パイプライン |
 
 #### 個別生成
 
@@ -191,6 +197,9 @@ python lineage_to_md.py data/instance_csv_example.yml data/output/instance_csv_e
 python lineage_to_md.py data/api_example.yml data/output/api_example.md \
   -o data/openapi/user-api.yaml \
   -a data/asyncapi/user-events.yaml
+
+# props省略 + 動的生成
+python lineage_to_md.py data/dynamic-fields.yml data/output/dynamic-fields.md
 
 # ETLパイプライン
 python lineage_to_md.py data/etl-pipeline.yml data/output/etl-pipeline.md

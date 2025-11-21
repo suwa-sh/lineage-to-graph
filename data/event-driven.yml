@@ -55,7 +55,7 @@ lineage:
   - { from: JPY, to: TransactionDomain.MoneyValueObject.currency }
   - { from: HttpRequest.timestamp, to: TransactionDomain.createdAt, transform: "parse as timestamp" }
   - { from: api, to: TransactionDomain.MetadataValueObject.source }
-  - { from: v1.0, to: TransactionDomain.MetadataValueObject.version }
+  - { from: "v1.0", to: TransactionDomain.MetadataValueObject.version }
 
   # Domain Object → Entity Object
   - { from: TransactionDomain.id, to: TransactionEntity.transactionId }
