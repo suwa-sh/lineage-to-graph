@@ -210,3 +210,4 @@ __marimo__/
 .claude/settings.local.json
 data/output/
 test/**/actual/
+.serena/

@@ -1,3 +1,4 @@
+from __future__ import annotations
 import sys
 import yaml
 import re
@@ -5,6 +6,7 @@ import csv
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Set
+from dataclasses import dataclass, field
 
 def slug(s: str) -> str:
     """Generate safe Mermaid identifier from string.
@@ -24,6 +26,247 @@ def slug(s: str) -> str:
     if re.match(r"^[0-9]", s):
         s = "n_" + s
     return s
+
+
+# ============================================
+# Domain Layer
+# ============================================
+
+# エンティティ・値オブジェクト
+
+@dataclass
+class ModelDefinition:
+    """モデル定義のエンティティ"""
+    name: str
+    type: str
+    props: List[str] = field(default_factory=list)
+    children: List[ModelDefinition] = field(default_factory=list)
+
+
+@dataclass
+class LineageEntry:
+    """リネージエントリのエンティティ"""
+    from_refs: List[str]
+    to_ref: str
+    transform: Optional[str] = None
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> LineageEntry:
+        """辞書からLineageEntryを生成"""
+        from_val = data.get('from', [])
+        if isinstance(from_val, str):
+            from_val = [from_val]
+        return LineageEntry(
+            from_refs=from_val,
+            to_ref=data.get('to', ''),
+            transform=data.get('transform')
+        )
+
+
+class FieldReference:
+    """フィールド参照の値オブジェクト"""
+
+    def __init__(self, ref: str):
+        self.ref = ref
+        self.model, self.instance, self.field = self._parse(ref)
+
+    @staticmethod
+    def _parse(ref: str) -> Tuple[str, Optional[str], Optional[str]]:
+        """Parse a reference string into model, instance, and field components.
+
+        Supports:
+        - 'Model.field' → ('Model', None, 'field')
+        - 'Model#instance.field' → ('Model', 'instance', 'field')
+        - 'Model' → ('Model', None, None)
+        - 'Model#instance' → ('Model', 'instance', None)
+
+        Args:
+            ref: Reference string
+
+        Returns:
+            Tuple of (model_name, instance_id, field_name)
+            Any component can be None if not present
+        """
+        # Check for instance identifier '#'
+        if '#' in ref:
+            # Split on '#' first
+            model_part, rest = ref.split('#', 1)
+
+            # Check if there's a field after the instance
+            if '.' in rest:
+                instance, field = rest.split('.', 1)
+                return (model_part, instance, field)
+            else:
+                # Just model#instance, no field
+                return (model_part, rest, None)
+        else:
+            # No instance identifier
+            if '.' in ref:
+                model, field = ref.split('.', 1)
+                return (model, None, field)
+            else:
+                # Just model name
+                return (ref, None, None)
+
+    def __str__(self) -> str:
+        return self.ref
+
+
+class ModelPath:
+    """モデルパス（階層・インスタンス含む）の値オブジェクト"""
+
+    def __init__(self, path: str):
+        self.full_path = path
+        self.base_path, self.instance = self._split_instance(path)
+
+    @staticmethod
+    def _split_instance(path: str) -> Tuple[str, Optional[str]]:
+        """モデルパスからインスタンスを分離"""
+        if '#' in path:
+            base, instance = path.rsplit('#', 1)
+            return base, instance
+        return path, None
+
+    def __str__(self) -> str:
+        return self.full_path
+
+
+class MermaidNode:
+    """Mermaidノードの値オブジェクト"""
+
+    def __init__(self, node_id: str, label: str, style_class: str):
+        self.node_id = node_id
+        self.label = label
+        self.style_class = style_class
+
+    def to_mermaid_line(self) -> str:
+        """Mermaid行を生成"""
+        return f'{self.node_id}["{self.label}"]:::{self.style_class}'
+
+
+# ファーストクラスコレクション
+
+class Models:
+    """ModelDefinitionのコレクション"""
+
+    def __init__(self, models: Optional[List[ModelDefinition]] = None):
+        self._models = models or []
+
+    def add(self, model: ModelDefinition) -> None:
+        self._models.append(model)
+
+    def extend(self, models: List[ModelDefinition]) -> None:
+        self._models.extend(models)
+
+    def find_by_name(self, name: str) -> Optional[ModelDefinition]:
+        for model in self._models:
+            if model.name == name:
+                return model
+        return None
+
+    def get_names(self) -> Set[str]:
+        return {m.name for m in self._models}
+
+    def to_list(self) -> List[ModelDefinition]:
+        return self._models
+
+    def __iter__(self):
+        return iter(self._models)
+
+
+class LineageEntries:
+    """LineageEntryのコレクション"""
+
+    def __init__(self, entries: Optional[List[LineageEntry]] = None):
+        self._entries = entries or []
+
+    def add(self, entry: LineageEntry) -> None:
+        self._entries.append(entry)
+
+    def to_list(self) -> List[LineageEntry]:
+        return self._entries
+
+    def __iter__(self):
+        return iter(self._entries)
+
+    @staticmethod
+    def from_dicts(data: List[Dict[str, Any]]) -> LineageEntries:
+        """辞書リストからLineageEntriesを生成"""
+        entries = [LineageEntry.from_dict(d) for d in data]
+        return LineageEntries(entries)
+
+
+class ReferencedModels:
+    """参照されているモデル名の集合"""
+
+    def __init__(self, model_names: Optional[Set[str]] = None):
+        self._names = model_names or set()
+
+    def add(self, name: str) -> None:
+        self._names.add(name)
+
+    def contains(self, name: str) -> bool:
+        return name in self._names
+
+    def difference(self, other: ReferencedModels) -> ReferencedModels:
+        return ReferencedModels(self._names - other._names)
+
+    def to_set(self) -> Set[str]:
+        return self._names
+
+    def __iter__(self):
+        return iter(self._names)
+
+
+class ModelInstances:
+    """モデルインスタンスのマップ {model_name: {instance_ids}}"""
+
+    def __init__(self, instances: Optional[Dict[str, Set[str]]] = None):
+        self._instances = instances or {}
+
+    def add_instance(self, model: str, instance: str) -> None:
+        if model not in self._instances:
+            self._instances[model] = set()
+        self._instances[model].add(instance)
+
+    def mark_model_without_instance(self, model: str) -> None:
+        """インスタンスなしでモデルが使われることをマーク"""
+        if model not in self._instances:
+            self._instances[model] = set()
+
+    def get_instances(self, model: str) -> Set[str]:
+        return self._instances.get(model, set())
+
+    def to_dict(self) -> Dict[str, Set[str]]:
+        return self._instances
+
+
+class UsedFields:
+    """使用されているフィールドのマップ {model_path: {field_names}}"""
+
+    def __init__(self, fields: Optional[Dict[str, Set[str]]] = None):
+        self._fields = fields or {}
+
+    def add_field(self, model_path: str, field: str) -> None:
+        if model_path not in self._fields:
+            self._fields[model_path] = set()
+        # '*'がすでにある場合は追加しない
+        if '*' not in self._fields[model_path]:
+            self._fields[model_path].add(field)
+
+    def mark_all_fields(self, model_path: str) -> None:
+        """全フィールドを使用することをマーク"""
+        self._fields[model_path] = {'*'}
+
+    def get_fields(self, model_path: str) -> Set[str]:
+        return self._fields.get(model_path, set())
+
+    def contains(self, model_path: str) -> bool:
+        return model_path in self._fields
+
+    def to_dict(self) -> Dict[str, Set[str]]:
+        return self._fields
+
 
 def load_model_from_csv(csv_path: str, model_type: str) -> Optional[Dict[str, Any]]:
     """Load model definition from CSV file.
@@ -350,6 +593,119 @@ def load_model_from_asyncapi(
     except Exception as e:
         print(f"Error loading AsyncAPI spec '{spec_path}': {e}", file=sys.stderr)
         return None
+
+
+# ============================================
+# Adapter Layer
+# ============================================
+
+class CSVAdapter:
+    """CSV形式のモデル定義を読み込むアダプター"""
+
+    def load_model(self, csv_path: str, model_type: str) -> Optional[ModelDefinition]:
+        """CSVファイルから単一モデルをロード
+
+        Args:
+            csv_path: CSVファイルパス
+            model_type: 'program' or 'datastore'
+
+        Returns:
+            ModelDefinitionまたはNone
+        """
+        result = load_model_from_csv(csv_path, model_type)
+        if result is None:
+            return None
+        return ModelDefinition(
+            name=result['name'],
+            type=result['type'],
+            props=result['props']
+        )
+
+
+class OpenAPIAdapter:
+    """OpenAPI仕様からモデル定義を読み込むアダプター"""
+
+    def load_model(self, spec_path: str, schema_name: str, model_type: str) -> Optional[ModelDefinition]:
+        """OpenAPI仕様から単一モデルをロード
+
+        Args:
+            spec_path: OpenAPI仕様ファイルパス
+            schema_name: スキーマ名
+            model_type: 'program' or 'datastore'
+
+        Returns:
+            ModelDefinitionまたはNone
+        """
+        result = load_model_from_openapi(spec_path, schema_name, model_type)
+        if result is None:
+            return None
+        return ModelDefinition(
+            name=result['name'],
+            type=result['type'],
+            props=result['props']
+        )
+
+
+class AsyncAPIAdapter:
+    """AsyncAPI仕様からモデル定義を読み込むアダプター"""
+
+    def load_model(self, spec_path: str, schema_name: str, model_type: str) -> Optional[ModelDefinition]:
+        """AsyncAPI仕様から単一モデルをロード
+
+        Args:
+            spec_path: AsyncAPI仕様ファイルパス
+            schema_name: スキーマ名
+            model_type: 'program' or 'datastore'
+
+        Returns:
+            ModelDefinitionまたはNone
+        """
+        result = load_model_from_asyncapi(spec_path, schema_name, model_type)
+        if result is None:
+            return None
+        return ModelDefinition(
+            name=result['name'],
+            type=result['type'],
+            props=result['props']
+        )
+
+
+class YAMLAdapter:
+    """YAMLファイルからリネージ定義を読み込むアダプター"""
+
+    def load_lineage_definition(self, yaml_path: str) -> Tuple[Models, LineageEntries]:
+        """YAMLファイルからモデルとリネージをロード
+
+        Args:
+            yaml_path: YAMLファイルパス
+
+        Returns:
+            (Models, LineageEntries)のタプル
+        """
+        data = yaml.safe_load(Path(yaml_path).read_text(encoding="utf-8"))
+
+        # モデル定義を変換
+        models_data = data.get("models", [])
+        models = Models([self._dict_to_model(m) for m in models_data])
+
+        # リネージ定義を変換
+        lineage_data = data.get("lineage", [])
+        lineage = LineageEntries.from_dicts(lineage_data)
+
+        return models, lineage
+
+    def _dict_to_model(self, data: Dict[str, Any]) -> ModelDefinition:
+        """辞書からModelDefinitionを生成（再帰的）"""
+        children_data = data.get('children', [])
+        children = [self._dict_to_model(c) for c in children_data]
+
+        return ModelDefinition(
+            name=data['name'],
+            type=data.get('type', 'datastore'),
+            props=data.get('props', []),
+            children=children
+        )
+
 
 def parse_reference(ref: str) -> Tuple[str, Optional[str], Optional[str]]:
     """Parse a reference string into model, instance, and field components.
@@ -786,6 +1142,110 @@ def create_dynamic_models_from_lineage(
     # Return empty list as we modified existing_models in place
     return []
 
+
+# ============================================
+# Repository Layer
+# ============================================
+
+class ModelRepository:
+    """外部ソースからモデルを探索・取得するリポジトリ"""
+
+    def __init__(self,
+                 csv_adapter: CSVAdapter,
+                 openapi_adapter: OpenAPIAdapter,
+                 asyncapi_adapter: AsyncAPIAdapter):
+        self.csv_adapter = csv_adapter
+        self.openapi_adapter = openapi_adapter
+        self.asyncapi_adapter = asyncapi_adapter
+
+    def find_models(
+        self,
+        required_models: ReferencedModels,
+        program_dirs: List[str],
+        datastore_dirs: List[str],
+        openapi_specs: List[str],
+        asyncapi_specs: List[str]
+    ) -> Tuple[Models, Set[str]]:
+        """必要なモデルを外部ソースから検索して取得
+
+        優先順位: OpenAPI → AsyncAPI → CSV
+
+        Args:
+            required_models: 必要なモデル名の集合
+            program_dirs: programタイプのCSVディレクトリリスト
+            datastore_dirs: datastoreタイプのCSVディレクトリリスト
+            openapi_specs: OpenAPI仕様ファイルリスト
+            asyncapi_specs: AsyncAPI仕様ファイルリスト
+
+        Returns:
+            (Models, csv_model_names): 見つかったモデルとCSV由来のモデル名
+        """
+        models = Models()
+        csv_model_names = set()
+        missing_models = set(required_models.to_set())
+
+        # 1. OpenAPIから取得
+        if openapi_specs:
+            openapi_models = self._find_from_openapi(openapi_specs, missing_models)
+            models.extend(openapi_models.to_list())
+            missing_models -= openapi_models.get_names()
+
+        # 2. AsyncAPIから取得
+        if asyncapi_specs:
+            asyncapi_models = self._find_from_asyncapi(asyncapi_specs, missing_models)
+            models.extend(asyncapi_models.to_list())
+            missing_models -= asyncapi_models.get_names()
+
+        # 3. CSVから取得
+        if program_dirs or datastore_dirs:
+            csv_models = self._find_from_csv(program_dirs, datastore_dirs, missing_models)
+            csv_model_names = csv_models.get_names()
+            models.extend(csv_models.to_list())
+            missing_models -= csv_model_names
+
+        # 見つからなかったモデルを通知
+        if missing_models:
+            print(f"Info: The following values will be treated as literals (not found as models): {', '.join(sorted(missing_models))}", file=sys.stderr)
+
+        return models, csv_model_names
+
+    def _find_from_openapi(self, spec_files: List[str], required_models: Set[str]) -> Models:
+        """OpenAPI仕様からモデルを検索"""
+        models_dict = find_openapi_models(spec_files, required_models, default_type='program')
+        return Models([
+            ModelDefinition(
+                name=m['name'],
+                type=m['type'],
+                props=m['props']
+            )
+            for m in models_dict.values()
+        ])
+
+    def _find_from_asyncapi(self, spec_files: List[str], required_models: Set[str]) -> Models:
+        """AsyncAPI仕様からモデルを検索"""
+        models_dict = find_asyncapi_models(spec_files, required_models, default_type='program')
+        return Models([
+            ModelDefinition(
+                name=m['name'],
+                type=m['type'],
+                props=m['props']
+            )
+            for m in models_dict.values()
+        ])
+
+    def _find_from_csv(self, program_dirs: List[str], datastore_dirs: List[str], required_models: Set[str]) -> Models:
+        """CSVファイルからモデルを検索"""
+        models_dict = find_model_csvs(program_dirs, datastore_dirs, required_models)
+        return Models([
+            ModelDefinition(
+                name=m['name'],
+                type=m['type'],
+                props=m['props']
+            )
+            for m in models_dict.values()
+        ])
+
+
 def find_openapi_models(
     spec_files: List[str],
     required_models: Set[str],
@@ -893,6 +1353,305 @@ def find_asyncapi_models(
             continue
 
     return models
+
+
+# ============================================
+# UseCase Layer
+# ============================================
+
+@dataclass
+class ParsedModelsData:
+    """ParseModelsUseCaseの出力データ"""
+    model_types: Dict[str, str]
+    field_nodes_by_model: Dict[str, List[Tuple[str, str]]]
+    field_node_ids: Dict[str, str]
+    model_hierarchy: Dict[str, Dict[str, Any]]
+
+
+class ExtractReferencedModelsUseCase:
+    """リネージから参照されているモデル・インスタンス・フィールドを抽出するUseCase"""
+
+    def execute(self, lineage: LineageEntries, yaml_models: Models) -> Tuple[ReferencedModels, ModelInstances, UsedFields]:
+        """リネージから参照情報を抽出
+
+        Args:
+            lineage: リネージエントリのコレクション
+            yaml_models: YAML定義のモデル（フィールド参照抽出用）
+
+        Returns:
+            (ReferencedModels, ModelInstances, UsedFields)
+        """
+        # モデル名を抽出
+        referenced_models = ReferencedModels()
+        for entry in lineage:
+            # from側
+            for ref in entry.from_refs:
+                field_ref = FieldReference(ref)
+                if field_ref.model:
+                    referenced_models.add(field_ref.model)
+            # to側
+            if entry.to_ref:
+                field_ref = FieldReference(entry.to_ref)
+                if field_ref.model:
+                    referenced_models.add(field_ref.model)
+
+        # インスタンスを抽出
+        model_instances = ModelInstances()
+        for entry in lineage:
+            # from側
+            for ref in entry.from_refs:
+                field_ref = FieldReference(ref)
+                if field_ref.model and field_ref.instance:
+                    model_instances.add_instance(field_ref.model, field_ref.instance)
+                elif field_ref.model:
+                    model_instances.mark_model_without_instance(field_ref.model)
+            # to側
+            if entry.to_ref:
+                field_ref = FieldReference(entry.to_ref)
+                if field_ref.model and field_ref.instance:
+                    model_instances.add_instance(field_ref.model, field_ref.instance)
+                elif field_ref.model:
+                    model_instances.mark_model_without_instance(field_ref.model)
+
+        # 使用フィールドを抽出
+        used_fields = UsedFields()
+
+        # ModelDefinitionとLineageEntryを辞書に変換して既存の関数を利用
+        def model_to_dict(m: ModelDefinition) -> Dict[str, Any]:
+            """ModelDefinitionを辞書に変換（再帰的）"""
+            result = {
+                'name': m.name,
+                'type': m.type,
+                'props': m.props
+            }
+            if m.children:
+                result['children'] = [model_to_dict(c) for c in m.children]
+            return result
+
+        def lineage_to_dict(entry: LineageEntry) -> Dict[str, Any]:
+            """LineageEntryを辞書に変換"""
+            result = {
+                'from': entry.from_refs,
+                'to': entry.to_ref
+            }
+            if entry.transform:
+                result['transform'] = entry.transform
+            return result
+
+        yaml_models_dict = [model_to_dict(m) for m in yaml_models]
+        lineage_dict = [lineage_to_dict(e) for e in lineage]
+        used_fields_dict = extract_referenced_fields(lineage_dict, yaml_models_dict)
+        for model_path, fields in used_fields_dict.items():
+            for field_name in fields:
+                if field_name == '*':
+                    used_fields.mark_all_fields(model_path)
+                else:
+                    used_fields.add_field(model_path, field_name)
+
+        return referenced_models, model_instances, used_fields
+
+
+class GenerateDynamicFieldsUseCase:
+    """props省略モデルの動的フィールド生成UseCase"""
+
+    def execute(self, lineage: LineageEntries, models: Models) -> None:
+        """動的フィールドを生成（modelsを直接更新）
+
+        Args:
+            lineage: リネージエントリのコレクション
+            models: モデルのコレクション（更新される）
+        """
+        # ModelDefinitionとLineageEntryを辞書に変換
+        def model_to_dict(m: ModelDefinition) -> Dict[str, Any]:
+            """ModelDefinitionを辞書に変換（再帰的）"""
+            result = {
+                'name': m.name,
+                'type': m.type,
+                'props': m.props
+            }
+            if m.children:
+                result['children'] = [model_to_dict(c) for c in m.children]
+            return result
+
+        def lineage_to_dict(entry: LineageEntry) -> Dict[str, Any]:
+            """LineageEntryを辞書に変換"""
+            result = {
+                'from': entry.from_refs,
+                'to': entry.to_ref
+            }
+            if entry.transform:
+                result['transform'] = entry.transform
+            return result
+
+        # 既存の関数を利用
+        model_types_dict = {}
+        def build_model_types(model_list: List[Dict[str, Any]], prefix: str = "") -> None:
+            for m in model_list:
+                model_path = f"{prefix}.{m['name']}" if prefix else m['name']
+                model_types_dict[model_path] = m.get('type', 'datastore')
+                if 'children' in m:
+                    build_model_types(m['children'], model_path)
+
+        models_dict = [model_to_dict(m) for m in models]
+        lineage_dict = [lineage_to_dict(e) for e in lineage]
+
+        build_model_types(models_dict)
+
+        # 動的フィールド生成（辞書形式で渡す）
+        create_dynamic_models_from_lineage(
+            lineage_dict,
+            models_dict,
+            model_types_dict
+        )
+
+
+class ParseModelsUseCase:
+    """モデル階層のパース・ノードID生成UseCase"""
+
+    def execute(
+        self,
+        models: Models,
+        used_fields: Optional[UsedFields],
+        csv_model_names: Set[str],
+        model_instances: ModelInstances
+    ) -> ParsedModelsData:
+        """モデルをパースしてMermaid生成用のデータ構造を作成
+
+        Args:
+            models: モデルのコレクション
+            used_fields: 使用されているフィールド（フィルタリング用、Noneなら全表示）
+            csv_model_names: CSV由来のモデル名（フィルタリング対象）
+            model_instances: モデルインスタンスの情報
+
+        Returns:
+            ParsedModelsData
+        """
+        # ModelDefinitionを辞書に変換
+        def model_to_dict(m: ModelDefinition) -> Dict[str, Any]:
+            """ModelDefinitionを辞書に変換（再帰的）"""
+            result = {
+                'name': m.name,
+                'type': m.type,
+                'props': m.props
+            }
+            if m.children:
+                result['children'] = [model_to_dict(c) for c in m.children]
+            return result
+
+        models_dict = [model_to_dict(m) for m in models]
+
+        # 既存の関数を利用
+        model_types, field_nodes_by_model, field_node_ids, model_hierarchy = parse_models_recursive(
+            models_dict,
+            used_fields=used_fields.to_dict() if used_fields else None,
+            csv_model_names=csv_model_names,
+            model_instances=model_instances.to_dict()
+        )
+
+        return ParsedModelsData(
+            model_types=model_types,
+            field_nodes_by_model=field_nodes_by_model,
+            field_node_ids=field_node_ids,
+            model_hierarchy=model_hierarchy
+        )
+
+
+class GenerateMermaidDiagramUseCase:
+    """Mermaid図の生成UseCase"""
+
+    def __init__(self):
+        self.literal_counter = 0
+
+    def execute(self, parsed_data: ParsedModelsData, lineage: LineageEntries) -> str:
+        """Mermaid図の文字列を生成
+
+        Args:
+            parsed_data: パース済みモデルデータ
+            lineage: リネージエントリのコレクション
+
+        Returns:
+            Mermaid図のMarkdown文字列
+        """
+        lines = [
+            "```mermaid",
+            "graph LR",
+            "  classDef program_bg fill:#E3F2FD,stroke:#1565C0,stroke-width:2px;",
+            "  classDef datastore_bg fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px;",
+            "  classDef property fill:#F5F5F5,stroke:#9E9E9E,stroke-width:1px,color:#424242;",
+            "  classDef literal fill:#FFF3E0,stroke:#EF6C00,stroke-width:1px,color:#BF360C;",
+            ""
+        ]
+
+        # サブグラフ生成
+        for model_path in sorted(parsed_data.model_hierarchy.keys()):
+            if parsed_data.model_hierarchy[model_path]['parent'] is None:
+                subgraph_lines = generate_subgraph(
+                    model_path,
+                    parsed_data.model_types,
+                    parsed_data.field_nodes_by_model,
+                    parsed_data.model_hierarchy
+                )
+                lines.extend(subgraph_lines)
+                lines.append("")
+
+        # リネージエッジ生成
+        model_ref_styles = {}
+
+        for entry in lineage:
+            if not entry.to_ref:
+                continue
+
+            # ターゲット決定
+            if entry.to_ref in parsed_data.field_node_ids:
+                t_id = parsed_data.field_node_ids[entry.to_ref]
+            elif entry.to_ref in parsed_data.model_types:
+                t_id = slug(entry.to_ref.replace(".", "_").replace("#", "_"))
+                if entry.to_ref not in model_ref_styles:
+                    model_ref_styles[entry.to_ref] = parsed_data.model_types[entry.to_ref]
+            else:
+                print(f"Warning: Unknown reference '{entry.to_ref}' in lineage", file=sys.stderr)
+                continue
+
+            # ソース処理
+            for i, src in enumerate(entry.from_refs):
+                # モデル参照チェック（フィールド参照より優先）
+                if src in parsed_data.model_types:
+                    s_id = slug(src.replace(".", "_").replace("#", "_"))
+                    if src not in model_ref_styles:
+                        model_ref_styles[src] = parsed_data.model_types[src]
+                elif src in parsed_data.field_node_ids:
+                    s_id = parsed_data.field_node_ids[src]
+                else:
+                    # リテラル値
+                    s_id = self._ensure_literal(lines, src)
+
+                # エッジ追加
+                label = entry.transform if i == 0 and entry.transform else ""
+                if label:
+                    lines.append(f'  {s_id} -->|"{label}"| {t_id}')
+                else:
+                    lines.append(f'  {s_id} --> {t_id}')
+
+        # モデル参照のスタイル追加
+        if model_ref_styles:
+            lines.append("")
+            for model_ref, model_type in model_ref_styles.items():
+                node_id = slug(model_ref.replace(".", "_").replace("#", "_"))
+                if model_type == "program":
+                    lines.append(f'  style {node_id} fill:#E3F2FD,stroke:#1565C0,stroke-width:2px')
+                else:  # datastore
+                    lines.append(f'  style {node_id} fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px')
+
+        lines.append("```")
+        return "\n".join(lines)
+
+    def _ensure_literal(self, lines: List[str], label: str) -> str:
+        """リテラルノードを作成"""
+        self.literal_counter += 1
+        nid = slug(f"lit_{self.literal_counter}")
+        lines.append(f'  {nid}["{label}"]:::literal')
+        return nid
+
 
 def find_model_csvs(
     program_dirs: List[str],
@@ -1159,201 +1918,96 @@ def main(
         asyncapi_spec: List of AsyncAPI specification files
         show_all_props: If True, show all properties; if False, show only used fields for CSV models
     """
-    data = yaml.safe_load(Path(input_yaml).read_text(encoding="utf-8"))
+    # 1. YAMLロード
+    yaml_adapter = YAMLAdapter()
+    yaml_models, lineage = yaml_adapter.load_lineage_definition(input_yaml)
 
-    yaml_models = data.get("models", [])
-    lineage = data.get("lineage", [])
+    # 2. リネージ解析（参照モデル・インスタンス・フィールド抽出）
+    extract_usecase = ExtractReferencedModelsUseCase()
+    referenced_models, model_instances, _ = extract_usecase.execute(lineage, yaml_models)
 
-    # Extract model names already defined in YAML
-    yaml_model_names = set()
-    for m in yaml_models:
-        yaml_model_names.add(m['name'])
-
-    # Extract all referenced models from lineage
-    referenced_models = extract_referenced_models(lineage)
-
-    # Find models that need to be loaded from external sources
-    missing_models = referenced_models - yaml_model_names
-
-    # Merge YAML models with external models if sources are specified
-    models = list(yaml_models)  # Start with YAML-defined models
-    csv_model_names = set()  # Track which models came from CSV
-    external_model_names = set()  # Track models from OpenAPI/AsyncAPI
-
-    if missing_models:
-        # Priority order: OpenAPI -> AsyncAPI -> CSV
-        # This ensures that API specs take precedence over CSV files
-
-        # 1. Load from OpenAPI specs (program type by default)
-        if openapi_spec:
-            openapi_models = find_openapi_models(
-                openapi_spec or [],
-                missing_models,
-                default_type='program'
-            )
-            external_model_names.update(openapi_models.keys())
-            models.extend(openapi_models.values())
-            missing_models -= set(openapi_models.keys())
-
-        # 2. Load from AsyncAPI specs (program type by default)
-        if asyncapi_spec:
-            asyncapi_models = find_asyncapi_models(
-                asyncapi_spec or [],
-                missing_models,
-                default_type='program'
-            )
-            external_model_names.update(asyncapi_models.keys())
-            models.extend(asyncapi_models.values())
-            missing_models -= set(asyncapi_models.keys())
-
-        # 3. Load from CSV directories (last resort)
-        if program_model_dir or datastore_model_dir:
-            csv_models = find_model_csvs(
-                program_model_dir or [],
-                datastore_model_dir or [],
-                missing_models
-            )
-
-            # Track CSV model names
-            csv_model_names = set(csv_models.keys())
-
-            # Add CSV models to the list
-            models.extend(csv_models.values())
-            missing_models -= csv_model_names
-
-        # Warn about models that couldn't be found (likely literals)
-        if missing_models:
-            print(f"Info: The following values will be treated as literals (not found as models): {', '.join(sorted(missing_models))}", file=sys.stderr)
-
-    # Extract model instances from lineage
-    model_instances = extract_model_instances(lineage)
-
-    # Create dynamic fields for models without props
-    # This must be done before parse_models_recursive so the fields are available
-    # Build initial model_types for dynamic field generation
-    temp_model_types = {}
-    def build_model_types(model_list: List[Dict[str, Any]], prefix: str = "") -> None:
-        for m in model_list:
-            model_path = f"{prefix}.{m['name']}" if prefix else m['name']
-            temp_model_types[model_path] = m.get('type', 'datastore')
-            if 'children' in m:
-                build_model_types(m['children'], model_path)
-    build_model_types(models)
-
-    # Generate dynamic fields from lineage references
-    create_dynamic_models_from_lineage(lineage, models, temp_model_types)
-
-    # Extract used fields from lineage (for filtering CSV models)
-    used_fields = None
-    if not show_all_props and csv_model_names:
-        # We need to pass all models (including CSV-loaded ones) to correctly identify model references
-        # Also need to add CSV model names to the known models list
-        all_models_for_ref_extraction = list(models)
-        used_fields = extract_referenced_fields(lineage, all_models_for_ref_extraction)
-
-    # Use recursive parser to handle nested models
-    model_types, field_nodes_by_model, field_node_ids, model_hierarchy = parse_models_recursive(
-        models,
-        used_fields=used_fields,
-        csv_model_names=csv_model_names,
-        model_instances=model_instances
+    # 3. 外部モデル取得
+    repository = ModelRepository(
+        CSVAdapter(),
+        OpenAPIAdapter(),
+        AsyncAPIAdapter()
+    )
+    missing_models = referenced_models.difference(ReferencedModels(yaml_models.get_names()))
+    external_models, csv_model_names = repository.find_models(
+        missing_models,
+        program_model_dir or [],
+        datastore_model_dir or [],
+        openapi_spec or [],
+        asyncapi_spec or []
     )
 
-    lines = [
-        "```mermaid",
-        "graph LR",
-        "  classDef program_bg fill:#E3F2FD,stroke:#1565C0,stroke-width:2px;",
-        "  classDef datastore_bg fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px;",
-        "  classDef property fill:#F5F5F5,stroke:#9E9E9E,stroke-width:1px,color:#424242;",
-        "  classDef literal fill:#FFF3E0,stroke:#EF6C00,stroke-width:1px,color:#BF360C;",
-        ""
-    ]
+    # 4. モデル統合
+    all_models = Models(yaml_models.to_list())
+    all_models.extend(external_models.to_list())
 
-    # Generate subgraphs only for root-level models (those without parents)
-    # Sort model paths for deterministic output order
-    for model_path in sorted(model_hierarchy.keys()):
-        if model_hierarchy[model_path]['parent'] is None:
-            subgraph_lines = generate_subgraph(model_path, model_types, field_nodes_by_model, model_hierarchy)
-            lines.extend(subgraph_lines)
-            lines.append("")
+    # 5. 動的フィールド生成
+    # NOTE: 既存の関数を直接使用（オブジェクトの参照更新のため）
+    model_types_dict = {}
+    def build_model_types_temp(model_list: List[ModelDefinition], prefix: str = "") -> None:
+        for m in model_list:
+            model_path = f"{prefix}.{m.name}" if prefix else m.name
+            model_types_dict[model_path] = m.type
+            if m.children:
+                build_model_types_temp(m.children, model_path)
 
-    literal_counter = 0
-    def ensure_literal(label: str) -> str:
-        """Create a unique literal node for each lineage entry with same label."""
-        nonlocal literal_counter
-        literal_counter += 1
-        nid = slug(f"lit_{literal_counter}")  # ノードIDは連番で一意に
-        lines.append(f'  {nid}["{label}"]:::literal')  # ラベルは元のテキスト
-        return nid
+    build_model_types_temp(all_models.to_list())
 
-    def is_model_field(token: str) -> bool:
-        """Check if token is a field reference (may include instance like 'Model#instance.field')"""
-        return token in field_node_ids
+    # 辞書形式に変換して既存関数を呼び出す
+    def model_to_dict_temp(m: ModelDefinition) -> Dict[str, Any]:
+        result = {'name': m.name, 'type': m.type, 'props': m.props}
+        if m.children:
+            result['children'] = [model_to_dict_temp(c) for c in m.children]
+        return result
 
-    def is_model_reference(token: str) -> bool:
-        """Check if token is a model reference (may include instance like 'Model#instance')"""
-        # Check if it's a known model path (including instance)
-        return token in model_types
+    def lineage_to_dict_temp(entry: LineageEntry) -> Dict[str, Any]:
+        result = {'from': entry.from_refs, 'to': entry.to_ref}
+        if entry.transform:
+            result['transform'] = entry.transform
+        return result
 
-    # Track which model references need style overrides
-    model_ref_styles = {}
+    models_dict_temp = [model_to_dict_temp(m) for m in all_models]
+    lineage_dict_temp = [lineage_to_dict_temp(e) for e in lineage]
+    create_dynamic_models_from_lineage(lineage_dict_temp, models_dict_temp, model_types_dict)
 
-    for e in lineage:
-        to_ref = e.get("to")
-        if not to_ref: continue
+    # 辞書の変更をModelDefinitionオブジェクトに反映
+    def dict_to_model(data: Dict[str, Any]) -> ModelDefinition:
+        children_data = data.get('children', [])
+        children = [dict_to_model(c) for c in children_data]
+        return ModelDefinition(
+            name=data['name'],
+            type=data.get('type', 'datastore'),
+            props=data.get('props', []),
+            children=children
+        )
 
-        # Determine target: field reference or model reference
-        # Check field reference first (most specific)
-        if is_model_field(to_ref):
-            # Direct field reference
-            t_id = field_node_ids[to_ref]
-        elif is_model_reference(to_ref):
-            # Model reference: use subgraph ID
-            t_id = slug(to_ref.replace(".", "_").replace("#", "_"))
-            # Track this model reference for style override
-            if to_ref not in model_ref_styles:
-                model_ref_styles[to_ref] = model_types[to_ref]
-        else:
-            print(f"Warning: Unknown reference '{to_ref}' in lineage", file=sys.stderr)
-            continue
+    all_models = Models([dict_to_model(m) for m in models_dict_temp])
 
-        srcs = e.get("from")
-        if isinstance(srcs, str): srcs = [srcs]
-        transform = e.get("transform", "")
+    # 6. 使用フィールド抽出（フィルタリング用）
+    used_fields = None
+    if not show_all_props and csv_model_names:
+        # 動的フィールド生成後に再度抽出
+        _, _, used_fields = extract_usecase.execute(lineage, all_models)
 
-        for i, src in enumerate(srcs):
-            # Determine source: model reference, field reference, or literal
-            # Check model reference first (before field) to handle nested models correctly
-            if is_model_reference(src):
-                # Model reference: use subgraph ID as node (creates implicit node)
-                s_id = slug(src.replace(".", "_").replace("#", "_"))
-                # Track this model reference for style override
-                if src not in model_ref_styles:
-                    model_ref_styles[src] = model_types[src]
-            elif is_model_field(src):
-                s_id = field_node_ids[src]
-            else:
-                # Literal value
-                s_id = ensure_literal(src)
+    # 7. モデルパース
+    parse_usecase = ParseModelsUseCase()
+    parsed_data = parse_usecase.execute(
+        all_models,
+        used_fields,
+        csv_model_names,
+        model_instances
+    )
 
-            label = transform if i == 0 and transform else ""
-            if label:
-                lines.append(f'  {s_id} -->|"{label}"| {t_id}')
-            else:
-                lines.append(f'  {s_id} --> {t_id}')
+    # 8. Mermaid図生成
+    generate_diagram_usecase = GenerateMermaidDiagramUseCase()
+    diagram = generate_diagram_usecase.execute(parsed_data, lineage)
 
-    # Add style directives for model references to fix color issue
-    if model_ref_styles:
-        lines.append("")
-        for model_ref, model_type in model_ref_styles.items():
-            node_id = slug(model_ref.replace(".", "_").replace("#", "_"))
-            if model_type == "program":
-                lines.append(f'  style {node_id} fill:#E3F2FD,stroke:#1565C0,stroke-width:2px')
-            else:  # datastore
-                lines.append(f'  style {node_id} fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px')
-
-    lines.append("```")
-    Path(output_md).write_text("\n".join(lines), encoding="utf-8")
+    # 9. ファイル出力
+    Path(output_md).write_text(diagram, encoding='utf-8')
 
 if __name__ == "__main__":
     import argparse
