@@ -13,6 +13,13 @@ graph LR
     end
     class HttpRequest program_bg
 
+    subgraph KafkaTransactionEvent[KafkaTransactionEvent]
+      KafkaTransactionEvent_event_id["event_id"]:::property
+      KafkaTransactionEvent_transaction_id["transaction_id"]:::property
+      KafkaTransactionEvent_amount["amount"]:::property
+    end
+    class KafkaTransactionEvent program_bg
+
     subgraph TransactionDomain[TransactionDomain]
       TransactionDomain_id["id"]:::property
       TransactionDomain_userId["userId"]:::property
@@ -39,6 +46,13 @@ graph LR
     end
     class TransactionEntity program_bg
 
+    subgraph transaction_history[transaction_history]
+      transaction_history_user_id["user_id"]:::property
+      transaction_history_transaction_id["transaction_id"]:::property
+      transaction_history_amount["amount"]:::property
+    end
+    class transaction_history datastore_bg
+
     subgraph transactions[transactions]
       transactions_transaction_id["transaction_id"]:::property
       transactions_user_id["user_id"]:::property
@@ -46,20 +60,6 @@ graph LR
       transactions_created_at["created_at"]:::property
     end
     class transactions datastore_bg
-
-    subgraph KafkaTransactionEvent[KafkaTransactionEvent]
-      KafkaTransactionEvent_event_id["event_id"]:::property
-      KafkaTransactionEvent_transaction_id["transaction_id"]:::property
-      KafkaTransactionEvent_amount["amount"]:::property
-    end
-    class KafkaTransactionEvent program_bg
-
-    subgraph transaction_history[transaction_history]
-      transaction_history_user_id["user_id"]:::property
-      transaction_history_transaction_id["transaction_id"]:::property
-      transaction_history_amount["amount"]:::property
-    end
-    class transaction_history datastore_bg
 
     subgraph user_balance_snapshot[user_balance_snapshot]
       user_balance_snapshot_user_id["user_id"]:::property

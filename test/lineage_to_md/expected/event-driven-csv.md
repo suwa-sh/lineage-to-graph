@@ -5,6 +5,14 @@ graph LR
   classDef property fill:#F5F5F5,stroke:#9E9E9E,stroke-width:1px,color:#424242;
   classDef literal fill:#FFF3E0,stroke:#EF6C00,stroke-width:1px,color:#BF360C;
 
+    subgraph HttpRequest[HttpRequest]
+      HttpRequest_request_id["request_id"]:::property
+      HttpRequest_user_id["user_id"]:::property
+      HttpRequest_amount["amount"]:::property
+      HttpRequest_timestamp["timestamp"]:::property
+    end
+    class HttpRequest program_bg
+
     subgraph KafkaTransactionEvent[KafkaTransactionEvent]
       KafkaTransactionEvent_event_id["event_id"]:::property
       KafkaTransactionEvent_transaction_id["transaction_id"]:::property
@@ -12,19 +20,17 @@ graph LR
     end
     class KafkaTransactionEvent program_bg
 
-    subgraph transaction_history[transaction_history]
-      transaction_history_user_id["user_id"]:::property
-      transaction_history_transaction_id["transaction_id"]:::property
-      transaction_history_amount["amount"]:::property
+    subgraph Metadata[Metadata]
+      Metadata_source["source"]:::property
+      Metadata_version["version"]:::property
     end
-    class transaction_history datastore_bg
+    class Metadata program_bg
 
-    subgraph user_balance_snapshot[user_balance_snapshot]
-      user_balance_snapshot_user_id["user_id"]:::property
-      user_balance_snapshot_total_amount["total_amount"]:::property
-      user_balance_snapshot_last_updated["last_updated"]:::property
+    subgraph Money[Money]
+      Money_amount["amount"]:::property
+      Money_currency["currency"]:::property
     end
-    class user_balance_snapshot datastore_bg
+    class Money program_bg
 
     subgraph TransactionDomain[TransactionDomain]
       TransactionDomain_id["id"]:::property
@@ -35,12 +41,6 @@ graph LR
     end
     class TransactionDomain program_bg
 
-    subgraph Money[Money]
-      Money_amount["amount"]:::property
-      Money_currency["currency"]:::property
-    end
-    class Money program_bg
-
     subgraph TransactionEntity[TransactionEntity]
       TransactionEntity_transactionId["transactionId"]:::property
       TransactionEntity_userId["userId"]:::property
@@ -49,19 +49,12 @@ graph LR
     end
     class TransactionEntity program_bg
 
-    subgraph HttpRequest[HttpRequest]
-      HttpRequest_request_id["request_id"]:::property
-      HttpRequest_user_id["user_id"]:::property
-      HttpRequest_amount["amount"]:::property
-      HttpRequest_timestamp["timestamp"]:::property
+    subgraph transaction_history[transaction_history]
+      transaction_history_user_id["user_id"]:::property
+      transaction_history_transaction_id["transaction_id"]:::property
+      transaction_history_amount["amount"]:::property
     end
-    class HttpRequest program_bg
-
-    subgraph Metadata[Metadata]
-      Metadata_source["source"]:::property
-      Metadata_version["version"]:::property
-    end
-    class Metadata program_bg
+    class transaction_history datastore_bg
 
     subgraph transactions[transactions]
       transactions_transaction_id["transaction_id"]:::property
@@ -70,6 +63,13 @@ graph LR
       transactions_created_at["created_at"]:::property
     end
     class transactions datastore_bg
+
+    subgraph user_balance_snapshot[user_balance_snapshot]
+      user_balance_snapshot_user_id["user_id"]:::property
+      user_balance_snapshot_total_amount["total_amount"]:::property
+      user_balance_snapshot_last_updated["last_updated"]:::property
+    end
+    class user_balance_snapshot datastore_bg
 
   HttpRequest_request_id --> TransactionDomain_id
   HttpRequest_user_id --> TransactionDomain_userId

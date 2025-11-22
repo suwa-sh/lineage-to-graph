@@ -12,14 +12,6 @@ graph LR
     end
     class HttpRequest program_bg
 
-    subgraph Transaction[Transaction]
-      Transaction_id["id"]:::property
-      Transaction_user_id["user_id"]:::property
-      Transaction_amount_jpy["amount_jpy"]:::property
-      Transaction_amount_usd["amount_usd"]:::property
-    end
-    class Transaction datastore_bg
-
     subgraph Money_jpy["Money (jpy)"]
       Money_jpy_amount["amount"]:::property
       Money_jpy_currency["currency"]:::property
@@ -31,6 +23,14 @@ graph LR
       Money_usd_currency["currency"]:::property
     end
     class Money_usd program_bg
+
+    subgraph Transaction[Transaction]
+      Transaction_id["id"]:::property
+      Transaction_user_id["user_id"]:::property
+      Transaction_amount_jpy["amount_jpy"]:::property
+      Transaction_amount_usd["amount_usd"]:::property
+    end
+    class Transaction datastore_bg
 
   HttpRequest_amount_jpy --> Money_jpy_amount
   lit_1["JP"]:::literal

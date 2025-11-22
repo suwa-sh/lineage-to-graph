@@ -238,23 +238,93 @@ def load_model_from_asyncapi(
 
         schema = schemas[schema_name]
 
+        # Helper function to resolve $ref recursively
+        def resolve_ref(ref_path: str, visited: Optional[set] = None) -> List[str]:
+            """Recursively resolve $ref and extract properties.
+
+            Args:
+                ref_path: The $ref path (e.g., "#/components/schemas/EventMetadata")
+                visited: Set of already visited refs to detect cycles
+
+            Returns:
+                List of property names from the referenced schema
+            """
+            if visited is None:
+                visited = set()
+
+            # Cycle detection
+            if ref_path in visited:
+                print(f"Warning: Circular reference detected: {ref_path}", file=sys.stderr)
+                return []
+            visited.add(ref_path)
+
+            # External references (http/https)
+            if ref_path.startswith('http://') or ref_path.startswith('https://'):
+                print(f"Warning: External reference '{ref_path}' in schema '{schema_name}' is not supported",
+                      file=sys.stderr)
+                return []
+
+            # Only handle internal references
+            if not ref_path.startswith('#/components/schemas/'):
+                print(f"Warning: Unsupported $ref format '{ref_path}' in schema '{schema_name}' "
+                      f"(expected '#/components/schemas/...')", file=sys.stderr)
+                return []
+
+            ref_schema_name = ref_path.split('/')[-1]
+
+            # Schema existence check
+            if ref_schema_name not in schemas:
+                print(f"Warning: Referenced schema '{ref_schema_name}' not found in AsyncAPI spec '{spec_path}'",
+                      file=sys.stderr)
+                return []
+
+            ref_schema = schemas[ref_schema_name]
+            props = []
+
+            # Extract direct properties
+            if 'properties' in ref_schema:
+                for prop_name, prop_def in ref_schema['properties'].items():
+                    if isinstance(prop_def, dict) and '$ref' in prop_def:
+                        # Nested $ref: resolve recursively and flatten
+                        nested_props = resolve_ref(prop_def['$ref'], visited.copy())
+                        # Flatten nested properties with dot notation
+                        props.extend([f"{prop_name}.{p}" for p in nested_props] if nested_props else [prop_name])
+                    else:
+                        props.append(prop_name)
+
+            # Handle allOf
+            if 'allOf' in ref_schema:
+                for item in ref_schema['allOf']:
+                    if 'properties' in item:
+                        props.extend(item['properties'].keys())
+                    if '$ref' in item:
+                        props.extend(resolve_ref(item['$ref'], visited.copy()))
+
+            if not props:
+                print(f"Info: Referenced schema '{ref_schema_name}' has no properties", file=sys.stderr)
+
+            return props
+
         # Extract properties
         props = []
         if 'properties' in schema:
-            props = list(schema['properties'].keys())
+            for prop_name, prop_def in schema['properties'].items():
+                if isinstance(prop_def, dict) and '$ref' in prop_def:
+                    # Handle $ref in properties
+                    nested_props = resolve_ref(prop_def['$ref'])
+                    # Flatten nested properties with dot notation
+                    props.extend([f"{prop_name}.{p}" for p in nested_props] if nested_props else [prop_name])
+                else:
+                    props.append(prop_name)
 
         # Handle allOf (merge properties from referenced schemas)
         if 'allOf' in schema:
             for item in schema['allOf']:
                 if 'properties' in item:
                     props.extend(item['properties'].keys())
-                # Handle $ref in allOf
+                # Handle $ref in allOf with improved error handling
                 if '$ref' in item:
-                    ref_path = item['$ref']
-                    if ref_path.startswith('#/components/schemas/'):
-                        ref_schema_name = ref_path.split('/')[-1]
-                        if ref_schema_name in schemas and 'properties' in schemas[ref_schema_name]:
-                            props.extend(schemas[ref_schema_name]['properties'].keys())
+                    props.extend(resolve_ref(item['$ref']))
 
         if not props:
             print(f"Warning: No properties found in schema '{schema_name}' in '{spec_path}'", file=sys.stderr)
@@ -1189,7 +1259,8 @@ def main(
     ]
 
     # Generate subgraphs only for root-level models (those without parents)
-    for model_path in model_hierarchy:
+    # Sort model paths for deterministic output order
+    for model_path in sorted(model_hierarchy.keys()):
         if model_hierarchy[model_path]['parent'] is None:
             subgraph_lines = generate_subgraph(model_path, model_types, field_nodes_by_model, model_hierarchy)
             lines.extend(subgraph_lines)

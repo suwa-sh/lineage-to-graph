@@ -5,6 +5,15 @@ graph LR
   classDef property fill:#F5F5F5,stroke:#9E9E9E,stroke-width:1px,color:#424242;
   classDef literal fill:#FFF3E0,stroke:#EF6C00,stroke-width:1px,color:#BF360C;
 
+    subgraph EmptyDatastore[EmptyDatastore]
+      EmptyDatastore_dataField1["dataField1"]:::property
+    end
+    class EmptyDatastore datastore_bg
+
+    subgraph EmptyDatastore2[EmptyDatastore2]
+    end
+    class EmptyDatastore2 datastore_bg
+
     subgraph EmptyModel[EmptyModel]
       EmptyModel_field1["field1"]:::property
       EmptyModel_field2["field2"]:::property
@@ -29,15 +38,6 @@ graph LR
       ParentModel2_prop["prop"]:::property
     end
     class ParentModel2 program_bg
-
-    subgraph EmptyDatastore[EmptyDatastore]
-      EmptyDatastore_dataField1["dataField1"]:::property
-    end
-    class EmptyDatastore datastore_bg
-
-    subgraph EmptyDatastore2[EmptyDatastore2]
-    end
-    class EmptyDatastore2 datastore_bg
 
   lit_1["literal_value1"]:::literal
   lit_1 --> EmptyModel_field1

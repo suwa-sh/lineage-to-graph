@@ -5,21 +5,6 @@ graph LR
   classDef property fill:#F5F5F5,stroke:#9E9E9E,stroke-width:1px,color:#424242;
   classDef literal fill:#FFF3E0,stroke:#EF6C00,stroke-width:1px,color:#BF360C;
 
-    subgraph user_table[user_table]
-      user_table_id["id"]:::property
-      user_table_name["name"]:::property
-      user_table_email["email"]:::property
-      user_table_created_at["created_at"]:::property
-      user_table_updated_at["updated_at"]:::property
-    end
-    class user_table datastore_bg
-
-    subgraph UserRequest[UserRequest]
-      UserRequest_name["name"]:::property
-      UserRequest_email["email"]:::property
-    end
-    class UserRequest program_bg
-
     subgraph UserCreated[UserCreated]
       UserCreated_userId["userId"]:::property
       UserCreated_name["name"]:::property
@@ -29,6 +14,21 @@ graph LR
       UserCreated_registrationSource["registrationSource"]:::property
     end
     class UserCreated program_bg
+
+    subgraph UserRequest[UserRequest]
+      UserRequest_name["name"]:::property
+      UserRequest_email["email"]:::property
+    end
+    class UserRequest program_bg
+
+    subgraph user_table[user_table]
+      user_table_id["id"]:::property
+      user_table_name["name"]:::property
+      user_table_email["email"]:::property
+      user_table_created_at["created_at"]:::property
+      user_table_updated_at["updated_at"]:::property
+    end
+    class user_table datastore_bg
 
   UserRequest_name --> UserCreated_name
   UserRequest_email --> UserCreated_email

@@ -5,6 +5,23 @@ graph LR
   classDef property fill:#F5F5F5,stroke:#9E9E9E,stroke-width:1px,color:#424242;
   classDef literal fill:#FFF3E0,stroke:#EF6C00,stroke-width:1px,color:#BF360C;
 
+    subgraph dwh_sales_fact[dwh_sales_fact]
+      dwh_sales_fact_fact_id["fact_id"]:::property
+      dwh_sales_fact_date_key["date_key"]:::property
+      dwh_sales_fact_product_key["product_key"]:::property
+      dwh_sales_fact_quantity["quantity"]:::property
+      dwh_sales_fact_revenue["revenue"]:::property
+    end
+    class dwh_sales_fact datastore_bg
+
+    subgraph mart_daily_sales[mart_daily_sales]
+      mart_daily_sales_report_date["report_date"]:::property
+      mart_daily_sales_total_revenue["total_revenue"]:::property
+      mart_daily_sales_total_quantity["total_quantity"]:::property
+      mart_daily_sales_avg_unit_price["avg_unit_price"]:::property
+    end
+    class mart_daily_sales datastore_bg
+
     subgraph raw_sales_log[raw_sales_log]
       raw_sales_log_log_id["log_id"]:::property
       raw_sales_log_timestamp["timestamp"]:::property
@@ -23,23 +40,6 @@ graph LR
       stg_sales_total_price["total_price"]:::property
     end
     class stg_sales datastore_bg
-
-    subgraph dwh_sales_fact[dwh_sales_fact]
-      dwh_sales_fact_fact_id["fact_id"]:::property
-      dwh_sales_fact_date_key["date_key"]:::property
-      dwh_sales_fact_product_key["product_key"]:::property
-      dwh_sales_fact_quantity["quantity"]:::property
-      dwh_sales_fact_revenue["revenue"]:::property
-    end
-    class dwh_sales_fact datastore_bg
-
-    subgraph mart_daily_sales[mart_daily_sales]
-      mart_daily_sales_report_date["report_date"]:::property
-      mart_daily_sales_total_revenue["total_revenue"]:::property
-      mart_daily_sales_total_quantity["total_quantity"]:::property
-      mart_daily_sales_avg_unit_price["avg_unit_price"]:::property
-    end
-    class mart_daily_sales datastore_bg
 
   raw_sales_log_log_id --> stg_sales_sale_id
   raw_sales_log_timestamp -->|"cast to date"| stg_sales_sale_date

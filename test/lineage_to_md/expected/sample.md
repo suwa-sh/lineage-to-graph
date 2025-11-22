@@ -11,12 +11,10 @@ graph LR
     end
     class UserDto program_bg
 
-    subgraph user_table[user_table]
-      user_table_name["name"]:::property
-      user_table_country["country"]:::property
-      user_table_load_timestamp["load_timestamp"]:::property
+    subgraph daily_summary[daily_summary]
+      daily_summary_total_amount["total_amount"]:::property
     end
-    class user_table datastore_bg
+    class daily_summary datastore_bg
 
     subgraph sales[sales]
       sales_amount["amount"]:::property
@@ -26,10 +24,12 @@ graph LR
     end
     class sales datastore_bg
 
-    subgraph daily_summary[daily_summary]
-      daily_summary_total_amount["total_amount"]:::property
+    subgraph user_table[user_table]
+      user_table_name["name"]:::property
+      user_table_country["country"]:::property
+      user_table_load_timestamp["load_timestamp"]:::property
     end
-    class daily_summary datastore_bg
+    class user_table datastore_bg
 
   UserDto_name --> user_table_name
   UserDto_country -->|"toUpperCase"| user_table_country
