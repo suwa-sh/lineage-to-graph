@@ -1,41 +1,70 @@
-asyncapi: 2.6.0
+asyncapi: 3.0.0
 info:
   title: User Events
   version: 1.0.0
-  description: User domain events for lineage-to-graph demo
+  description: User domain events for lineage-to-graph demo (AsyncAPI 3.0)
 
 components:
-  messages:
-    UserCreated:
-      description: Event published when a user is created
-      payload:
-        type: object
-        properties:
-          userId:
-            type: string
-            description: User ID
-          name:
-            type: string
-            description: User name
-          email:
-            type: string
-            description: User email address
-          timestamp:
-            type: string
-            format: date-time
-            description: Event timestamp
+  schemas:
+    # 共通スキーマ: ユーザーの基本情報
+    UserBase:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: User ID
+        name:
+          type: string
+          description: User name
+        email:
+          type: string
+          description: User email address
 
+    # 共通スキーマ: イベントメタデータ
+    EventMetadata:
+      type: object
+      properties:
+        eventId:
+          type: string
+          description: Event ID
+        timestamp:
+          type: string
+          format: date-time
+          description: Event timestamp
+
+    # UserCreated イベント ($ref を使用)
+    UserCreated:
+      allOf:
+        - $ref: "#/components/schemas/UserBase"
+        - $ref: "#/components/schemas/EventMetadata"
+        - type: object
+          properties:
+            registrationSource:
+              type: string
+              description: Registration source (web, mobile, api)
+
+    # UserUpdated イベント ($ref を使用)
     UserUpdated:
-      description: Event published when a user is updated
-      payload:
-        type: object
-        properties:
-          userId:
-            type: string
-          name:
-            type: string
-          email:
-            type: string
-          timestamp:
-            type: string
-            format: date-time
+      allOf:
+        - $ref: "#/components/schemas/UserBase"
+        - $ref: "#/components/schemas/EventMetadata"
+        - type: object
+          properties:
+            updatedFields:
+              type: array
+              items:
+                type: string
+              description: List of updated field names
+
+    # UserDeleted イベント (シンプルな $ref の例)
+    UserDeleted:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: User ID
+        metadata:
+          $ref: "#/components/schemas/EventMetadata"
+        reason:
+          type: string
+          description: Deletion reason

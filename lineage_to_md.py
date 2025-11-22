@@ -179,35 +179,36 @@ def load_model_from_openapi(
 
 def load_model_from_asyncapi(
     spec_path: str,
-    message_name: str,
+    schema_name: str,
     model_type: str
 ) -> Optional[Dict[str, Any]]:
-    """Load model definition from AsyncAPI specification.
+    """Load model definition from AsyncAPI 3.0 specification.
 
-    Supports AsyncAPI 2.x and 3.x in YAML or JSON format.
-    Extracts properties from components/messages/<message_name>/payload.
+    Supports AsyncAPI 3.x in YAML or JSON format.
+    Extracts properties from components/schemas/<schema_name>.
+    Supports $ref resolution for nested schema references.
 
     Args:
         spec_path: Path to AsyncAPI spec file (.yaml, .yml, .json)
-        message_name: Message name in components/messages
+        schema_name: Schema name in components/schemas
         model_type: 'program' or 'datastore'
 
     Returns:
         Model definition dict {name, type, props} or None if failed
 
     Example:
-        # asyncapi.yaml:
+        # asyncapi.yaml (AsyncAPI 3.0):
         components:
-          messages:
-            UserCreated:
-              payload:
-                type: object
-                properties:
-                  userId: {type: string}
-                  name: {type: string}
+          schemas:
+            KafkaRemittance:
+              type: object
+              properties:
+                sbSystemId: {type: string}
+                remittance:
+                  $ref: "#/components/schemas/Remittance"
 
-        load_model_from_asyncapi('asyncapi.yaml', 'UserCreated', 'program')
-        # Returns: {'name': 'UserCreated', 'type': 'program', 'props': ['userId', 'name']}
+        load_model_from_asyncapi('asyncapi.yaml', 'KafkaRemittance', 'program')
+        # Returns: {'name': 'KafkaRemittance', 'type': 'program', 'props': ['sbSystemId', 'remittance']}
     """
     try:
         path = Path(spec_path)
@@ -225,31 +226,42 @@ def load_model_from_asyncapi(
                 print(f"Error: Unsupported file format '{path.suffix}' (expected .yaml, .yml, or .json)", file=sys.stderr)
                 return None
 
-        # Navigate to components/messages
+        # Navigate to components/schemas
         if 'components' not in spec:
             print(f"Warning: No 'components' section in AsyncAPI spec '{spec_path}'", file=sys.stderr)
             return None
 
-        messages = spec['components'].get('messages', {})
-        if message_name not in messages:
-            print(f"Warning: Message '{message_name}' not found in AsyncAPI spec '{spec_path}'", file=sys.stderr)
+        schemas = spec['components'].get('schemas', {})
+        if schema_name not in schemas:
+            print(f"Warning: Schema '{schema_name}' not found in AsyncAPI spec '{spec_path}'", file=sys.stderr)
             return None
 
-        message = messages[message_name]
+        schema = schemas[schema_name]
 
-        # Extract properties from payload
+        # Extract properties
         props = []
-        if 'payload' in message:
-            payload = message['payload']
-            if 'properties' in payload:
-                props = list(payload['properties'].keys())
+        if 'properties' in schema:
+            props = list(schema['properties'].keys())
+
+        # Handle allOf (merge properties from referenced schemas)
+        if 'allOf' in schema:
+            for item in schema['allOf']:
+                if 'properties' in item:
+                    props.extend(item['properties'].keys())
+                # Handle $ref in allOf
+                if '$ref' in item:
+                    ref_path = item['$ref']
+                    if ref_path.startswith('#/components/schemas/'):
+                        ref_schema_name = ref_path.split('/')[-1]
+                        if ref_schema_name in schemas and 'properties' in schemas[ref_schema_name]:
+                            props.extend(schemas[ref_schema_name]['properties'].keys())
 
         if not props:
-            print(f"Warning: No properties found in message '{message_name}' payload in '{spec_path}'", file=sys.stderr)
+            print(f"Warning: No properties found in schema '{schema_name}' in '{spec_path}'", file=sys.stderr)
             return None
 
         return {
-            'name': message_name,
+            'name': schema_name,
             'type': model_type,
             'props': props
         }
@@ -751,7 +763,9 @@ def find_asyncapi_models(
     required_models: Set[str],
     default_type: str = 'program'
 ) -> Dict[str, Dict[str, Any]]:
-    """Find and load model definitions from AsyncAPI specification files.
+    """Find and load model definitions from AsyncAPI 3.0 specification files.
+
+    Searches components/schemas for model definitions.
 
     Args:
         spec_files: List of AsyncAPI spec file paths
@@ -780,15 +794,15 @@ def find_asyncapi_models(
                     print(f"Warning: Unsupported file format '{path.suffix}'", file=sys.stderr)
                     continue
 
-            # Get all messages
-            if 'components' not in spec or 'messages' not in spec['components']:
+            # Get all schemas from components/schemas (AsyncAPI 3.0)
+            if 'components' not in spec or 'schemas' not in spec['components']:
                 continue
 
-            messages = spec['components']['messages']
+            schemas = spec['components']['schemas']
 
             # Load required models
             for model_name in required_models:
-                if model_name in messages and model_name not in models:
+                if model_name in schemas and model_name not in models:
                     model_def = load_model_from_asyncapi(spec_path, model_name, default_type)
                     if model_def:
                         models[model_name] = model_def
@@ -922,8 +936,11 @@ def parse_models_recursive(
         if not instances:
             instances = {None}
 
+        # Sort instances alphabetically for deterministic output (None sorts first)
+        sorted_instances = sorted(instances, key=lambda x: (x is not None, x or ''))
+
         # Process each instance of this model
-        for instance in instances:
+        for instance in sorted_instances:
             # Build instance-specific paths
             if instance:
                 instance_path = f"{full_model_path}#{instance}"
@@ -1178,13 +1195,13 @@ def main(
             lines.extend(subgraph_lines)
             lines.append("")
 
-    literal_nodes = {}
+    literal_counter = 0
     def ensure_literal(label: str) -> str:
-        nid = literal_nodes.get(label)
-        if nid: return nid
-        nid = slug(f"lit_{label}")
-        lines.append(f'  {nid}["{label}"]:::literal')
-        literal_nodes[label] = nid
+        """Create a unique literal node for each lineage entry with same label."""
+        nonlocal literal_counter
+        literal_counter += 1
+        nid = slug(f"lit_{literal_counter}")  # ノードIDは連番で一意に
+        lines.append(f'  {nid}["{label}"]:::literal')  # ラベルは元のテキスト
         return nid
 
     def is_model_field(token: str) -> bool:
