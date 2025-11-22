@@ -254,13 +254,13 @@ graph LR
 
 ```bash
 python lineage_to_md.py <input.yaml> <output.md> \
-  --program-model-dirs <dir1> <dir2> ... \
-  --datastore-model-dirs <dir1> <dir2> ...
+  --program-model-dir <dir1> <dir2> ... \
+  --datastore-model-dir <dir1> <dir2> ...
 ```
 
 **引数**:
-- `--program-model-dirs`: programタイプのモデルCSVが格納されたディレクトリ(複数指定可)
-- `--datastore-model-dirs`: datastoreタイプのモデルCSVが格納されたディレクトリ(複数指定可)
+- `--program-model-dir`: programタイプのモデルCSVが格納されたディレクトリ(複数指定可)
+- `--datastore-model-dir`: datastoreタイプのモデルCSVが格納されたディレクトリ(複数指定可)
 
 ### 使用パターン
 
@@ -277,8 +277,8 @@ lineage:
 
 ```bash
 python lineage_to_md.py lineage.yml output.md \
-  --program-model-dirs data/レイアウト \
-  --datastore-model-dirs data/テーブル定義
+  --program-model-dir data/レイアウト \
+  --datastore-model-dir data/テーブル定義
 ```
 
 #### パターン2: YAML + CSV混在方式
@@ -383,13 +383,13 @@ lineage:
 ```bash
 # デフォルト: 使用フィールドのみ表示 (4フィールド)
 python lineage_to_md.py data/event-driven-csv.yml output_filtered.md \
-  --program-model-dirs data/レイアウト \
-  --datastore-model-dirs data/テーブル定義
+  --program-model-dir data/レイアウト \
+  --datastore-model-dir data/テーブル定義
 
 # --show-all-props: 全プロパティ表示 (27フィールド)
 python lineage_to_md.py data/event-driven-csv.yml output_all.md \
-  --program-model-dirs data/レイアウト \
-  --datastore-model-dirs data/テーブル定義 \
+  --program-model-dir data/レイアウト \
+  --datastore-model-dir data/テーブル定義 \
   --show-all-props
 ```
 

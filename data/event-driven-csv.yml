@@ -9,8 +9,8 @@
 #
 # 実行コマンド:
 # python lineage_to_md.py data/event-driven-csv.yml data/output/event_driven_csv.md \
-#   --program-model-dirs data/レイアウト \
-#   --datastore-model-dirs data/テーブル定義
+#   --program-model-dir data/レイアウト \
+#   --datastore-model-dir data/テーブル定義
 
 spec: lineage-v1
 

@@ -115,39 +115,39 @@ python lineage_to_md.py data/sample.yml data/output/output.md
 
 # CSVモデル読み込み (使用フィールドのみ表示 - デフォルト)
 python lineage_to_md.py data/event-driven-csv.yml data/output/output.md \
-  --program-model-dirs data/レイアウト \
-  --datastore-model-dirs data/テーブル定義
+  --program-model-dir data/レイアウト \
+  --datastore-model-dir data/テーブル定義
 
 # OpenAPIモデル読み込み
 python lineage_to_md.py data/api_example.yml data/output/output.md \
-  --openapi-specs data/openapi/user-api.yaml
+  --openapi-spec data/openapi/user-api.yaml
 
 # AsyncAPIモデル読み込み
 python lineage_to_md.py data/api_example.yml data/output/output.md \
-  --asyncapi-specs data/asyncapi/user-events.yaml
+  --asyncapi-spec data/asyncapi/user-events.yaml
 
 # 複数ソース統合 (CSV + OpenAPI + AsyncAPI)
 python lineage_to_md.py data/api_example.yml data/output/output.md \
-  --program-model-dirs data/レイアウト \
-  --openapi-specs data/openapi/user-api.yaml \
-  --asyncapi-specs data/asyncapi/user-events.yaml
+  --program-model-dir data/レイアウト \
+  --openapi-spec data/openapi/user-api.yaml \
+  --asyncapi-spec data/asyncapi/user-events.yaml
 
 # CSVモデル読み込み (全フィールド表示)
 python lineage_to_md.py data/event-driven-csv.yml data/output/output.md \
-  --program-model-dirs data/レイアウト \
-  --datastore-model-dirs data/テーブル定義 \
+  --program-model-dir data/レイアウト \
+  --datastore-model-dir data/テーブル定義 \
   --show-all-props
 ```
 
 #### 3. コマンドラインオプション
 
-| オプション               | 短縮形 | 説明                                                              |
-| ------------------------ | ------ | ----------------------------------------------------------------- |
-| `--program-model-dirs`   | `-p`   | programタイプのCSVモデルが格納されたディレクトリ(複数指定可)      |
-| `--datastore-model-dirs` | `-d`   | datastoreタイプのCSVモデルが格納されたディレクトリ(複数指定可)    |
-| `--openapi-specs`        | `-o`   | OpenAPI仕様ファイル (YAML/JSON形式) (複数指定可)                   |
-| `--asyncapi-specs`       | `-a`   | AsyncAPI仕様ファイル (YAML/JSON形式) (複数指定可)                  |
-| `--show-all-props`       | なし   | CSV読み込み時に全プロパティを表示(デフォルトは使用フィールドのみ) |
+| オプション              | 短縮形 | 説明                                                              |
+| ----------------------- | ------ | ----------------------------------------------------------------- |
+| `--program-model-dir`   | `-p`   | programタイプのCSVモデルが格納されたディレクトリ(複数指定可)      |
+| `--datastore-model-dir` | `-d`   | datastoreタイプのCSVモデルが格納されたディレクトリ(複数指定可)    |
+| `--openapi-spec`        | `-o`   | OpenAPI仕様ファイル (YAML/JSON形式) (複数指定可)                  |
+| `--asyncapi-spec`       | `-a`   | AsyncAPI仕様ファイル (YAML/JSON形式) (複数指定可)                 |
+| `--show-all-props`      | なし   | CSV読み込み時に全プロパティを表示(デフォルトは使用フィールドのみ) |
 
 **使用例:**
 ```bash

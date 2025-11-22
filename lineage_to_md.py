@@ -1364,47 +1364,47 @@ Examples:
 
   # CSV mode
   python lineage_to_md.py lineage.yml output.md \\
-    --program-model-dirs data/レイアウト \\
-    --datastore-model-dirs data/テーブル定義
+    --program-model-dir data/レイアウト \\
+    --datastore-model-dir data/テーブル定義
 
   # OpenAPI mode
   python lineage_to_md.py lineage.yml output.md \\
-    --openapi-specs data/openapi/user-api.yaml
+    --openapi-spec data/openapi/user-api.yaml
 
   # AsyncAPI mode
   python lineage_to_md.py lineage.yml output.md \\
-    --asyncapi-specs data/asyncapi/events.yaml
+    --asyncapi-spec data/asyncapi/events.yaml
 
   # Mixed mode (YAML + CSV + OpenAPI + AsyncAPI)
   python lineage_to_md.py lineage.yml output.md \\
-    --program-model-dirs data/レイアウト \\
-    --openapi-specs data/openapi/api.yaml \\
-    --asyncapi-specs data/asyncapi/events.yaml
+    --program-model-dir data/レイアウト \\
+    --openapi-spec data/openapi/api.yaml \\
+    --asyncapi-spec data/asyncapi/events.yaml
 """
     )
 
     parser.add_argument("input_yaml", help="Path to input YAML file")
     parser.add_argument("output_md", help="Path to output Markdown file")
     parser.add_argument(
-        "--program-model-dirs", "-p",
+        "--program-model-dir", "-p",
         action="append",
         dest="program_model_dirs",
         help="Directory containing program model CSV files (can be specified multiple times)"
     )
     parser.add_argument(
-        "--datastore-model-dirs", "-d",
+        "--datastore-model-dir", "-d",
         action="append",
         dest="datastore_model_dirs",
         help="Directory containing datastore model CSV files (can be specified multiple times)"
     )
     parser.add_argument(
-        "--openapi-specs", "-o",
+        "--openapi-spec", "-o",
         action="append",
         dest="openapi_specs",
         help="OpenAPI specification file (YAML/JSON) (can be specified multiple times)"
     )
     parser.add_argument(
-        "--asyncapi-specs", "-a",
+        "--asyncapi-spec", "-a",
         action="append",
         dest="asyncapi_specs",
         help="AsyncAPI specification file (YAML/JSON) (can be specified multiple times)"
