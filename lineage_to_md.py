@@ -225,17 +225,10 @@ class MermaidNode:
 # Backward compatibility wrapper
 # ファーストクラスコレクション
 
+@dataclass(frozen=True)
 class Models:
-    """ModelDefinitionのコレクション"""
-
-    def __init__(self, models: Optional[List[ModelDefinition]] = None):
-        self._models = models or []
-
-    def add(self, model: ModelDefinition) -> None:
-        self._models.append(model)
-
-    def extend(self, models: List[ModelDefinition]) -> None:
-        self._models.extend(models)
+    """ModelDefinitionのコレクション（Immutable）"""
+    _models: List[ModelDefinition] = field(default_factory=list)
 
     def find_by_name(self, name: str) -> Optional[ModelDefinition]:
         for model in self._models:
@@ -247,12 +240,27 @@ class Models:
         return {m.name for m in self._models}
 
     def to_list(self) -> List[ModelDefinition]:
-        return self._models
+        return list(self._models)  # 防御的コピー
 
     def __iter__(self):
         return iter(self._models)
 
-    def add_dynamic_fields_from_lineage(self, lineage: 'LineageEntries') -> None:
+    @classmethod
+    def merge(cls, models_list: List['Models']) -> 'Models':
+        """複数のModelsを結合して新しいModelsを返す
+
+        Args:
+            models_list: 結合するModelsのリスト
+
+        Returns:
+            新しいModelsインスタンス
+        """
+        all_models: List[ModelDefinition] = []
+        for models in models_list:
+            all_models.extend(models.to_list())
+        return Models(all_models)
+
+    def with_dynamic_fields(self, lineage: 'LineageEntries') -> 'Models':
         """Create dynamic model definitions for models referenced in lineage but not defined in models.
 
         This function enables users to define models with only name and type,
@@ -276,7 +284,7 @@ class Models:
             lineage: LineageEntries コレクション
 
         Returns:
-            None (self を直接更新)
+            新しいModelsインスタンス（動的フィールドが追加されたもの）
         """
         # Convert to dict for processing
         existing_models = [m.to_dict() for m in self._models]
@@ -452,8 +460,8 @@ class Models:
         # Convert modified dicts back to ModelDefinition objects
         updated_models = [ModelDefinition.from_dict(m) for m in existing_models]
 
-        # Update the Models collection in place
-        self._models = updated_models
+        # Return new Models instance with updated models
+        return Models(updated_models)
 
     def parse_to_structured_data(
         self,
@@ -572,17 +580,13 @@ class Models:
         return parsed_data
 
 
+@dataclass(frozen=True)
 class LineageEntries:
-    """LineageEntryのコレクション"""
-
-    def __init__(self, entries: Optional[List[LineageEntry]] = None):
-        self._entries = entries or []
-
-    def add(self, entry: LineageEntry) -> None:
-        self._entries.append(entry)
+    """LineageEntryのコレクション（Immutable）"""
+    _entries: List[LineageEntry] = field(default_factory=list)
 
     def to_list(self) -> List[LineageEntry]:
-        return self._entries
+        return list(self._entries)  # 防御的コピー
 
     def __iter__(self):
         return iter(self._entries)
@@ -617,7 +621,8 @@ class LineageEntries:
                 'Money#usd': {'amount'}
             }
         """
-        used_fields = UsedFields()
+        # Immutable化: Dict[str, Set[str]]を構築してからUsedFieldsを生成
+        fields_dict: Dict[str, Set[str]] = {}
 
         # Build a set of all defined model names (including nested ones) from YAML
         # to distinguish model references from field references
@@ -634,7 +639,7 @@ class LineageEntries:
         known_models = collect_model_names(yaml_models.to_list())
 
         def add_field(ref: str) -> None:
-            """Add a field reference to the used_fields dictionary.
+            """Add a field reference to the fields_dict.
 
             Args:
                 ref: Reference string (can be 'Model', 'Model#instance', 'Model.field', 'Model#instance.field')
@@ -654,11 +659,15 @@ class LineageEntries:
             # Check if it's a model-level reference (no field specified)
             if field is None:
                 # Model-level reference: mark all fields in this model/instance as used
-                used_fields.mark_all_fields(tracking_key)
+                fields_dict[tracking_key] = {'*'}
                 return
 
-            # It's a field reference - add to UsedFields
-            used_fields.add_field(tracking_key, field)
+            # It's a field reference - add to fields_dict
+            if tracking_key not in fields_dict:
+                fields_dict[tracking_key] = set()
+            # '*'がすでにある場合は追加しない
+            if '*' not in fields_dict[tracking_key]:
+                fields_dict[tracking_key].add(field)
 
         # Process all lineage entries
         for entry in self._entries:
@@ -681,17 +690,13 @@ class LineageEntries:
                 if model and (field is not None or model in known_models or instance is not None):
                     add_field(entry.to_ref)
 
-        return used_fields
+        return UsedFields(fields_dict)
 
 
+@dataclass(frozen=True)
 class ReferencedModels:
-    """参照されているモデル名の集合"""
-
-    def __init__(self, model_names: Optional[Set[str]] = None):
-        self._names = model_names or set()
-
-    def add(self, name: str) -> None:
-        self._names.add(name)
+    """参照されているモデル名の集合（Immutable）"""
+    _names: Set[str] = field(default_factory=set)
 
     def contains(self, name: str) -> bool:
         return name in self._names
@@ -700,60 +705,39 @@ class ReferencedModels:
         return ReferencedModels(self._names - other._names)
 
     def to_set(self) -> Set[str]:
-        return self._names
+        return set(self._names)  # 防御的コピー
 
     def __iter__(self):
         return iter(self._names)
 
 
+@dataclass(frozen=True)
 class ModelInstances:
-    """モデルインスタンスのマップ {model_name: {instance_ids}}"""
-
-    def __init__(self, instances: Optional[Dict[str, Set[str]]] = None):
-        self._instances = instances or {}
-
-    def add_instance(self, model: str, instance: str) -> None:
-        if model not in self._instances:
-            self._instances[model] = set()
-        self._instances[model].add(instance)
-
-    def mark_model_without_instance(self, model: str) -> None:
-        """インスタンスなしでモデルが使われることをマーク"""
-        if model not in self._instances:
-            self._instances[model] = set()
+    """モデルインスタンスのマップ {model_name: {instance_ids}}（Immutable）"""
+    _instances: Dict[str, Set[str]] = field(default_factory=dict)
 
     def get_instances(self, model: str) -> Set[str]:
-        return self._instances.get(model, set())
+        return set(self._instances.get(model, set()))  # 防御的コピー
 
     def to_dict(self) -> Dict[str, Set[str]]:
-        return self._instances
+        # 防御的コピー: 辞書とSet両方をコピー
+        return {k: set(v) for k, v in self._instances.items()}
 
 
+@dataclass(frozen=True)
 class UsedFields:
-    """使用されているフィールドのマップ {model_path: {field_names}}"""
-
-    def __init__(self, fields: Optional[Dict[str, Set[str]]] = None):
-        self._fields = fields or {}
-
-    def add_field(self, model_path: str, field: str) -> None:
-        if model_path not in self._fields:
-            self._fields[model_path] = set()
-        # '*'がすでにある場合は追加しない
-        if '*' not in self._fields[model_path]:
-            self._fields[model_path].add(field)
-
-    def mark_all_fields(self, model_path: str) -> None:
-        """全フィールドを使用することをマーク"""
-        self._fields[model_path] = {'*'}
+    """使用されているフィールドのマップ {model_path: {field_names}}（Immutable）"""
+    _fields: Dict[str, Set[str]] = field(default_factory=dict)
 
     def get_fields(self, model_path: str) -> Set[str]:
-        return self._fields.get(model_path, set())
+        return set(self._fields.get(model_path, set()))  # 防御的コピー
 
     def contains(self, model_path: str) -> bool:
         return model_path in self._fields
 
     def to_dict(self) -> Dict[str, Set[str]]:
-        return self._fields
+        # 防御的コピー: 辞書とSet両方をコピー
+        return {k: set(v) for k, v in self._fields.items()}
 
 
 # ============================================================================
@@ -1147,33 +1131,36 @@ class ModelRepository:
         Returns:
             (Models, csv_model_names): 見つかったモデルとCSV由来のモデル名
         """
-        models = Models()
+        # Immutable化: Models.merge()を使用
+        models_list = []
         csv_model_names = set()
         missing_models = set(required_models.to_set())
 
         # 1. OpenAPIから取得
         if openapi_specs:
             openapi_models = self._find_from_openapi(openapi_specs, missing_models)
-            models.extend(openapi_models.to_list())
+            models_list.append(openapi_models)
             missing_models -= openapi_models.get_names()
 
         # 2. AsyncAPIから取得
         if asyncapi_specs:
             asyncapi_models = self._find_from_asyncapi(asyncapi_specs, missing_models)
-            models.extend(asyncapi_models.to_list())
+            models_list.append(asyncapi_models)
             missing_models -= asyncapi_models.get_names()
 
         # 3. CSVから取得
         if program_dirs or datastore_dirs:
             csv_models = self._find_from_csv(program_dirs, datastore_dirs, missing_models)
             csv_model_names = csv_models.get_names()
-            models.extend(csv_models.to_list())
+            models_list.append(csv_models)
             missing_models -= csv_model_names
 
         # 見つからなかったモデルを通知
         if missing_models:
             print(f"Info: The following values will be treated as literals (not found as models): {', '.join(sorted(missing_models))}", file=sys.stderr)
 
+        # Models.merge()で結合
+        models = Models.merge(models_list) if models_list else Models([])
         return models, csv_model_names
 
     def _find_from_openapi(self, spec_files: List[str], required_models: Set[str]) -> Models:
@@ -1376,56 +1363,67 @@ class ExtractReferencedModelsUseCase:
         Returns:
             (ReferencedModels, ModelInstances, UsedFields)
         """
-        # モデル名を抽出
-        referenced_models = ReferencedModels()
-        for entry in lineage:
-            # from側
-            for ref in entry.from_refs:
-                field_ref = FieldReference(ref)
-                if field_ref.model:
-                    referenced_models.add(field_ref.model)
-            # to側
-            if entry.to_ref:
-                field_ref = FieldReference(entry.to_ref)
-                if field_ref.model:
-                    referenced_models.add(field_ref.model)
+        # Immutable化: 1回のループで3つのデータ構造を構築
+        model_names: Set[str] = set()
+        instances_dict: Dict[str, Set[str]] = {}
 
-        # インスタンスを抽出
-        model_instances = ModelInstances()
         for entry in lineage:
             # from側
             for ref in entry.from_refs:
                 field_ref = FieldReference(ref)
-                if field_ref.model and field_ref.instance:
-                    model_instances.add_instance(field_ref.model, field_ref.instance)
-                elif field_ref.model:
-                    model_instances.mark_model_without_instance(field_ref.model)
+                if field_ref.model:
+                    model_names.add(field_ref.model)
+                    # インスタンス処理
+                    if field_ref.instance:
+                        if field_ref.model not in instances_dict:
+                            instances_dict[field_ref.model] = set()
+                        instances_dict[field_ref.model].add(field_ref.instance)
+                    else:
+                        # インスタンスなしでモデルが使われることをマーク
+                        if field_ref.model not in instances_dict:
+                            instances_dict[field_ref.model] = set()
+
             # to側
             if entry.to_ref:
                 field_ref = FieldReference(entry.to_ref)
-                if field_ref.model and field_ref.instance:
-                    model_instances.add_instance(field_ref.model, field_ref.instance)
-                elif field_ref.model:
-                    model_instances.mark_model_without_instance(field_ref.model)
+                if field_ref.model:
+                    model_names.add(field_ref.model)
+                    # インスタンス処理
+                    if field_ref.instance:
+                        if field_ref.model not in instances_dict:
+                            instances_dict[field_ref.model] = set()
+                        instances_dict[field_ref.model].add(field_ref.instance)
+                    else:
+                        # インスタンスなしでモデルが使われることをマーク
+                        if field_ref.model not in instances_dict:
+                            instances_dict[field_ref.model] = set()
 
         # 使用フィールドを抽出（ドメインメソッドを使用）
         used_fields = lineage.extract_referenced_fields(yaml_models)
 
-        return referenced_models, model_instances, used_fields
+        # Immutableオブジェクトを生成
+        return (
+            ReferencedModels(model_names),
+            ModelInstances(instances_dict),
+            used_fields
+        )
 
 
 class GenerateDynamicFieldsUseCase:
     """props省略モデルの動的フィールド生成UseCase"""
 
-    def execute(self, lineage: LineageEntries, models: Models) -> None:
-        """動的フィールドを生成（modelsを直接更新）
+    def execute(self, lineage: LineageEntries, models: Models) -> Models:
+        """動的フィールドを生成（新しいModelsを返す）
 
         Args:
             lineage: リネージエントリのコレクション
-            models: モデルのコレクション（更新される）
+            models: モデルのコレクション
+
+        Returns:
+            動的フィールドが追加された新しいModels
         """
-        # 動的フィールド生成（ドメインメソッドを使用）
-        models.add_dynamic_fields_from_lineage(lineage)
+        # 動的フィールド生成（ドメインメソッドを使用、新しいインスタンスを返す）
+        return models.with_dynamic_fields(lineage)
 
 
 class ParseModelsUseCase:
@@ -1592,13 +1590,12 @@ def main(
         asyncapi_specs or []
     )
 
-    # 4. モデル統合
-    all_models = Models(yaml_models.to_list())
-    all_models.extend(external_models.to_list())
+    # 4. モデル統合（Immutable化: Models.merge()使用）
+    all_models = Models.merge([yaml_models, external_models])
 
-    # 5. 動的フィールド生成
+    # 5. 動的フィールド生成（Immutable化: 新しいModelsを受け取る）
     dynamic_usecase = GenerateDynamicFieldsUseCase()
-    dynamic_usecase.execute(lineage, all_models)
+    all_models = dynamic_usecase.execute(lineage, all_models)
 
     # 6. 使用フィールド抽出（フィルタリング用）
     used_fields = None
