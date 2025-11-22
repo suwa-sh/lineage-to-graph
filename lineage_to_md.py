@@ -22,96 +22,36 @@ logging.basicConfig(
 
 # エンティティ・値オブジェクト
 
-@dataclass
+@dataclass(frozen=True)
 class ModelDefinition:
     """モデル定義のエンティティ"""
     name: str
     type: str
-    props: List[str] = field(default_factory=list)
-    children: List[ModelDefinition] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """自身を辞書に変換（シリアライズ）
-
-        Returns:
-            辞書形式のモデル定義
-        """
-        result = {
-            'name': self.name,
-            'type': self.type,
-            'props': self.props
-        }
-        if self.children:
-            result['children'] = [c.to_dict() for c in self.children]
-        return result
-
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> ModelDefinition:
-        """辞書から生成（デシリアライズ）
-
-        Args:
-            data: 辞書形式のモデル定義
-
-        Returns:
-            ModelDefinitionオブジェクト
-        """
-        children_data = data.get('children', [])
-        children = [ModelDefinition.from_dict(c) for c in children_data]
-        return ModelDefinition(
-            name=data['name'],
-            type=data.get('type', 'datastore'),
-            props=data.get('props', []),
-            children=children
-        )
+    props: Tuple[str, ...] = field(default_factory=tuple)
+    children: Tuple['ModelDefinition', ...] = field(default_factory=tuple)
 
 
-@dataclass
+@dataclass(frozen=True)
 class LineageEntry:
     """リネージエントリのエンティティ"""
-    from_refs: List[str]
+    from_refs: Tuple[str, ...]
     to_ref: str
     transform: Optional[str] = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        """自身を辞書に変換（シリアライズ）
 
-        Returns:
-            辞書形式のリネージエントリ
-        """
-        result = {
-            'from': self.from_refs,
-            'to': self.to_ref
-        }
-        if self.transform:
-            result['transform'] = self.transform
-        return result
-
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> LineageEntry:
-        """辞書からLineageEntryを生成（デシリアライズ）
-
-        Args:
-            data: 辞書形式のリネージエントリ
-
-        Returns:
-            LineageEntryオブジェクト
-        """
-        from_val = data.get('from', [])
-        if isinstance(from_val, str):
-            from_val = [from_val]
-        return LineageEntry(
-            from_refs=from_val,
-            to_ref=data.get('to', ''),
-            transform=data.get('transform')
-        )
-
-
+@dataclass(frozen=True)
 class FieldReference:
     """フィールド参照の値オブジェクト"""
+    ref: str
+    model: str = field(init=False)
+    instance: Optional[str] = field(init=False)
+    field: Optional[str] = field(init=False)
 
-    def __init__(self, ref: str):
-        self.ref = ref
-        self.model, self.instance, self.field = self.parse(ref)
+    def __post_init__(self):
+        model, instance, field_name = self.parse(self.ref)
+        object.__setattr__(self, 'model', model)
+        object.__setattr__(self, 'instance', instance)
+        object.__setattr__(self, 'field', field_name)
 
     @staticmethod
     def parse(ref: str) -> Tuple[str, Optional[str], Optional[str]]:
@@ -172,32 +112,12 @@ class FieldReference:
         return self.ref
 
 
-class ModelPath:
-    """モデルパス（階層・インスタンス含む）の値オブジェクト"""
-
-    def __init__(self, path: str):
-        self.full_path = path
-        self.base_path, self.instance = self._split_instance(path)
-
-    @staticmethod
-    def _split_instance(path: str) -> Tuple[str, Optional[str]]:
-        """モデルパスからインスタンスを分離"""
-        if '#' in path:
-            base, instance = path.rsplit('#', 1)
-            return base, instance
-        return path, None
-
-    def __str__(self) -> str:
-        return self.full_path
-
-
+@dataclass(frozen=True)
 class MermaidNode:
     """Mermaidノードの値オブジェクト"""
-
-    def __init__(self, node_id: str, label: str, style_class: str):
-        self.node_id = node_id
-        self.label = label
-        self.style_class = style_class
+    node_id: str
+    label: str
+    style_class: str
 
     def to_mermaid_line(self) -> str:
         """Mermaid行を生成"""
@@ -342,10 +262,13 @@ class DynamicFieldGenerator:
         # 動的フィールドを収集
         dynamic_fields = self._collect_dynamic_fields(model_map)
 
-        # モデルを更新
-        self._update_models_with_dynamic_fields(model_list, model_map, dynamic_fields)
+        # モデルを更新（model_mapが更新される）
+        self._update_models_with_dynamic_fields(model_map, dynamic_fields)
 
-        return Models(model_list)
+        # ツリーを再構築（frozenオブジェクトとして）
+        updated_models = self._rebuild_tree_from_map(model_list, model_map)
+
+        return Models(updated_models)
 
     def _copy_model(self, model: ModelDefinition) -> ModelDefinition:
         """ModelDefinitionを再帰的に複製
@@ -359,8 +282,8 @@ class DynamicFieldGenerator:
         return ModelDefinition(
             name=model.name,
             type=model.type,
-            props=list(model.props),  # リストを複製
-            children=[self._copy_model(c) for c in model.children]
+            props=tuple(model.props),  # tupleに変換
+            children=tuple(self._copy_model(c) for c in model.children)
         )
 
     def _build_model_map(self, models: List[ModelDefinition]) -> Dict[str, ModelDefinition]:
@@ -460,55 +383,56 @@ class DynamicFieldGenerator:
 
     def _update_models_with_dynamic_fields(
         self,
-        model_list: List[ModelDefinition],
         model_map: Dict[str, ModelDefinition],
         dynamic_fields: Dict[str, Set[str]]
     ) -> None:
-        """動的フィールドでモデルを更新
+        """動的フィールドでモデルを更新（frozen対応）
 
         Args:
-            model_list: 更新対象のモデルリスト
-            model_map: モデルパスのマップ
+            model_map: モデルパスのマップ（更新される）
             dynamic_fields: 動的フィールドのマップ
         """
         for model_path, fields in dynamic_fields.items():
             parts = model_path.split('.')
 
             if model_path in model_map:
-                # Existing model - update props
+                # Existing model - create new instance with updated props
                 model_def = model_map[model_path]
                 if not model_def.props:
                     logging.info(f"モデル '{model_path}' はプロパティ未定義のため、lineage参照から動的生成します")
-                    model_def.props.extend(sorted(fields))
+                    # Create new ModelDefinition with updated props
+                    updated_model = ModelDefinition(
+                        name=model_def.name,
+                        type=model_def.type,
+                        props=tuple(sorted(fields)),
+                        children=model_def.children
+                    )
+                    model_map[model_path] = updated_model
             else:
                 # Need to create missing child models
-                self._create_missing_child_models(model_list, model_map, parts, fields)
+                self._create_missing_child_models(model_map, parts, fields)
 
     def _create_missing_child_models(
         self,
-        model_list: List[ModelDefinition],
         model_map: Dict[str, ModelDefinition],
         path_parts: List[str],
         fields: Set[str]
     ) -> None:
-        """不足している子モデルを作成
+        """不足している子モデルを作成（frozen対応）
 
         Args:
-            model_list: ルートモデルのリスト
-            model_map: モデルパスのマップ
+            model_map: モデルパスのマップ（更新される）
             path_parts: モデルパスを分割したリスト
             fields: 追加するフィールドのセット
         """
         # Find where the path exists and where it breaks
-        parent_model = None
         parent_type = 'program'
         missing_index = -1
 
         for i, part in enumerate(path_parts):
             partial_path = '.'.join(path_parts[:i+1])
             if partial_path in model_map:
-                parent_model = model_map[partial_path]
-                parent_type = parent_model.type
+                parent_type = model_map[partial_path].type
             else:
                 missing_index = i
                 break
@@ -517,7 +441,6 @@ class DynamicFieldGenerator:
             return  # All parts exist
 
         # Create missing child models from missing_index onwards
-        current_parent = parent_model
         for i in range(missing_index, len(path_parts)):
             part = path_parts[i]
             created_path = '.'.join(path_parts[:i+1])
@@ -526,16 +449,9 @@ class DynamicFieldGenerator:
             new_model = ModelDefinition(
                 name=part,
                 type=parent_type,  # Inherit type from parent
-                props=sorted(fields) if i == len(path_parts) - 1 else [],
-                children=[]
+                props=tuple(sorted(fields)) if i == len(path_parts) - 1 else tuple(),
+                children=tuple()
             )
-
-            # Add to parent's children
-            if current_parent:
-                current_parent.children.append(new_model)
-            else:
-                # This shouldn't happen if root model exists
-                model_list.append(new_model)
 
             # Update model_map
             model_map[created_path] = new_model
@@ -543,8 +459,60 @@ class DynamicFieldGenerator:
             # Log info message
             logging.info(f"モデル '{created_path}' はプロパティ未定義のため、lineage参照から動的生成します")
 
-            # Prepare for next iteration
-            current_parent = new_model
+    def _rebuild_tree_from_map(
+        self,
+        original_models: List[ModelDefinition],
+        model_map: Dict[str, ModelDefinition]
+    ) -> List[ModelDefinition]:
+        """model_mapから更新されたモデルツリーを再構築
+
+        Args:
+            original_models: 元のルートモデルリスト
+            model_map: 更新されたモデルマップ
+
+        Returns:
+            再構築されたModelDefinitionのリスト
+        """
+        def rebuild_model(model_path: str) -> ModelDefinition:
+            """指定パスのモデルを再帰的に再構築"""
+            model = model_map[model_path]
+
+            # 元のchildrenの順序を保持するため、model.childrenから順序を取得
+            child_order = {child.name: i for i, child in enumerate(model.children)}
+
+            # 子モデルのパスを見つける
+            child_paths = [
+                path for path in model_map.keys()
+                if path.startswith(model_path + '.') and
+                path.count('.') == model_path.count('.') + 1
+            ]
+
+            # 元の順序でソート（新しく追加された子は末尾に）
+            def get_order(path: str) -> int:
+                child_name = path.split('.')[-1]
+                return child_order.get(child_name, len(child_order))
+
+            child_paths_sorted = sorted(child_paths, key=get_order)
+
+            # 子モデルを再帰的に再構築
+            rebuilt_children = tuple(rebuild_model(child_path) for child_path in child_paths_sorted)
+
+            # 新しいModelDefinitionを生成（childrenを更新）
+            return ModelDefinition(
+                name=model.name,
+                type=model.type,
+                props=model.props,
+                children=rebuilt_children
+            )
+
+        # ルートモデル（'.'を含まないパス）を再構築
+        result = []
+        for original_model in original_models:
+            model_path = original_model.name
+            if model_path in model_map:
+                result.append(rebuild_model(model_path))
+
+        return result
 
 
 class ModelParser:
@@ -597,13 +565,9 @@ class ModelParser:
                 model_hierarchy={}
             )
 
-        used_fields_dict = self.used_fields.to_dict() if self.used_fields else None
-        model_instances_dict = self.model_instances.to_dict() if self.model_instances else {}
-
         for m in self.models:
             self._parse_model(
-                m, parent_prefix, parent_instance,
-                used_fields_dict, model_instances_dict, parsed_data
+                m, parent_prefix, parent_instance, parsed_data
             )
 
         return parsed_data
@@ -613,8 +577,6 @@ class ModelParser:
         model: ModelDefinition,
         parent_prefix: str,
         parent_instance: str,
-        used_fields_dict: Optional[Dict[str, Set[str]]],
-        model_instances_dict: Dict[str, Set[Optional[str]]],
         parsed_data: 'ParsedModelsData'
     ) -> None:
         """単一モデルを解析
@@ -623,8 +585,6 @@ class ModelParser:
             model: 解析対象のModelDefinition
             parent_prefix: 親モデルのパス
             parent_instance: 親インスタンス
-            used_fields_dict: 使用フィールドの辞書
-            model_instances_dict: モデルインスタンスの辞書
             parsed_data: 蓄積先のParsedModelsData
         """
         name = model.name
@@ -636,7 +596,7 @@ class ModelParser:
         full_model_path = f"{parent_prefix}.{name}" if parent_prefix else name
 
         # Get instances for this model
-        instances = model_instances_dict.get(name, set())
+        instances = self.model_instances.get_instances(name) if self.model_instances else set()
         if not instances:
             instances = {None}
 
@@ -647,7 +607,7 @@ class ModelParser:
         for instance in sorted_instances:
             self._process_model_instance(
                 instance, full_model_path, mtype, props, children,
-                parent_prefix, used_fields_dict, parsed_data
+                parent_prefix, parsed_data
             )
 
         # Recursively parse children
@@ -668,7 +628,6 @@ class ModelParser:
         props: List[str],
         children: List[ModelDefinition],
         parent_prefix: str,
-        used_fields_dict: Optional[Dict[str, Set[str]]],
         parsed_data: 'ParsedModelsData'
     ) -> None:
         """モデルインスタンスを処理
@@ -680,7 +639,6 @@ class ModelParser:
             props: プロパティリスト
             children: 子モデルのリスト
             parent_prefix: 親モデルのパス
-            used_fields_dict: 使用フィールドの辞書
             parsed_data: 蓄積先のParsedModelsData
         """
         # Build instance-specific paths
@@ -702,10 +660,10 @@ class ModelParser:
         }
 
         # Parse fields
-        should_filter = self._should_filter_fields(instance_path, full_model_path, used_fields_dict)
+        should_filter = self._should_filter_fields(instance_path, full_model_path)
         nodes = self._parse_fields(
             props, full_model_path, instance, instance_id_part,
-            should_filter, used_fields_dict, parsed_data
+            should_filter, parsed_data
         )
 
         parsed_data.field_nodes_by_model[instance_path] = nodes
@@ -713,20 +671,18 @@ class ModelParser:
     def _should_filter_fields(
         self,
         instance_path: str,
-        full_model_path: str,
-        used_fields_dict: Optional[Dict[str, Set[str]]]
+        full_model_path: str
     ) -> bool:
         """フィールドをフィルタリングすべきか判定
 
         Args:
             instance_path: インスタンスパス
             full_model_path: モデルの完全パス
-            used_fields_dict: 使用フィールドの辞書
 
         Returns:
-            フィルタリングすべきかどうか
+            フィールドリングすべきかどうか
         """
-        if used_fields_dict is None or not self.csv_model_names:
+        if self.used_fields is None or not self.csv_model_names:
             return False
 
         # Extract model name from path (last component)
@@ -734,7 +690,7 @@ class ModelParser:
 
         return (
             model_name in self.csv_model_names and
-            instance_path in used_fields_dict
+            self.used_fields.contains(instance_path)
         )
 
     def _parse_fields(
@@ -744,7 +700,6 @@ class ModelParser:
         instance: Optional[str],
         instance_id_part: str,
         should_filter: bool,
-        used_fields_dict: Optional[Dict[str, Set[str]]],
         parsed_data: 'ParsedModelsData'
     ) -> List[Tuple[str, str]]:
         """フィールドを解析してノードリストを生成
@@ -755,7 +710,6 @@ class ModelParser:
             instance: インスタンス識別子
             instance_id_part: インスタンスID部分（ノードID生成用）
             should_filter: フィルタリングすべきかどうか
-            used_fields_dict: 使用フィールドの辞書
             parsed_data: field_node_idsを更新するためのParsedModelsData
 
         Returns:
@@ -772,7 +726,7 @@ class ModelParser:
         for p in props:
             # Apply filtering if applicable
             if should_filter:
-                if not self._is_field_used(instance_path, p, used_fields_dict):
+                if not self._is_field_used(instance_path, p):
                     continue
 
             # Generate node ID
@@ -793,23 +747,21 @@ class ModelParser:
     def _is_field_used(
         self,
         instance_path: str,
-        field_name: str,
-        used_fields_dict: Optional[Dict[str, Set[str]]]
+        field_name: str
     ) -> bool:
         """フィールドが使用されているか判定
 
         Args:
             instance_path: インスタンスパス
             field_name: フィールド名
-            used_fields_dict: 使用フィールドの辞書
 
         Returns:
             フィールドが使用されているかどうか
         """
-        if used_fields_dict is None:
+        if self.used_fields is None:
             return True
 
-        model_used_fields = used_fields_dict.get(instance_path, set())
+        model_used_fields = self.used_fields.get_fields(instance_path)
 
         # '*' means all fields are used
         if '*' in model_used_fields:
@@ -833,7 +785,16 @@ class LineageEntries:
     @staticmethod
     def from_dicts(data: List[Dict[str, Any]]) -> LineageEntries:
         """辞書リストからLineageEntriesを生成"""
-        entries = [LineageEntry.from_dict(d) for d in data]
+        entries = []
+        for d in data:
+            from_val = d.get('from', [])
+            if isinstance(from_val, str):
+                from_val = [from_val]
+            entries.append(LineageEntry(
+                from_refs=tuple(from_val),
+                to_ref=d.get('to', ''),
+                transform=d.get('transform')
+            ))
         return LineageEntries(entries)
 
     def extract_referenced_fields(self, yaml_models: Models) -> 'UsedFields':
@@ -958,10 +919,6 @@ class ModelInstances:
     def get_instances(self, model: str) -> Set[str]:
         return set(self._instances.get(model, set()))  # 防御的コピー
 
-    def to_dict(self) -> Dict[str, Set[str]]:
-        # 防御的コピー: 辞書とSet両方をコピー
-        return {k: set(v) for k, v in self._instances.items()}
-
 
 @dataclass(frozen=True)
 class UsedFields:
@@ -973,10 +930,6 @@ class UsedFields:
 
     def contains(self, model_path: str) -> bool:
         return model_path in self._fields
-
-    def to_dict(self) -> Dict[str, Set[str]]:
-        # 防御的コピー: 辞書とSet両方をコピー
-        return {k: set(v) for k, v in self._fields.items()}
 
 
 # ============================================================================
@@ -1055,7 +1008,7 @@ class CSVAdapter:
             return ModelDefinition(
                 name=model_name,
                 type=model_type,
-                props=props
+                props=tuple(props)
             )
 
         except Exception as e:
@@ -1131,7 +1084,7 @@ class OpenAPIAdapter:
             return ModelDefinition(
                 name=schema_name,
                 type=model_type,
-                props=props
+                props=tuple(props)
             )
 
         except Exception as e:
@@ -1286,7 +1239,7 @@ class AsyncAPIAdapter:
             return ModelDefinition(
                 name=schema_name,
                 type=model_type,
-                props=props
+                props=tuple(props)
             )
 
         except Exception as e:
@@ -1326,8 +1279,8 @@ class YAMLAdapter:
         return ModelDefinition(
             name=data['name'],
             type=data.get('type', 'datastore'),
-            props=data.get('props', []),
-            children=children
+            props=tuple(data.get('props', [])),
+            children=tuple(children)
         )
 
 

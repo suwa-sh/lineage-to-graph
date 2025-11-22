@@ -80,51 +80,6 @@ class TestUsedFields:
         # Then: Falseが返される
         assert result is False
 
-    def test_to_dict_すべてのフィールドが返されること(self):
-        # Given: 複数のモデルとフィールドを持つUsedFields
-        fields_dict = {
-            "User": {"id", "name", "email"},
-            "Product": {"id", "name"},
-            "Order": set()
-        }
-        used_fields = UsedFields(fields_dict)
-
-        # When: to_dictを呼ぶ
-        result = used_fields.to_dict()
-
-        # Then: すべてのモデルとフィールドが含まれる
-        assert result == fields_dict
-
-    def test_to_dict_防御的コピーが返されること(self):
-        # Given: フィールドを持つUsedFields
-        fields_dict = {
-            "User": {"id", "name"},
-            "Product": {"price"}
-        }
-        used_fields = UsedFields(fields_dict)
-
-        # When: to_dictを呼ぶ
-        result = used_fields.to_dict()
-
-        # Then: 辞書とSet両方がコピーされている
-        # 辞書レベルの比較
-        assert result == fields_dict
-        assert result is not fields_dict
-
-        # Setレベルの比較
-        assert result["User"] == fields_dict["User"]
-        assert result["User"] is not fields_dict["User"]
-
-    def test_to_dict_空の場合_空の辞書が返されること(self):
-        # Given: 空のUsedFields
-        used_fields = UsedFields({})
-
-        # When: to_dictを呼ぶ
-        result = used_fields.to_dict()
-
-        # Then: 空の辞書が返される
-        assert result == {}
-
     def test_immutable_frozenであること(self):
         # Given: UsedFields
         used_fields = UsedFields({"User": {"id"}})
