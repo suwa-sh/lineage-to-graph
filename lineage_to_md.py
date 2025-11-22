@@ -4,9 +4,17 @@ import yaml
 import re
 import csv
 import json
+import logging
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Set
 from dataclasses import dataclass, field
+
+# ロギング設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s: %(message)s',
+    stream=sys.stderr
+)
 
 # ============================================
 # Domain Layer
@@ -262,22 +270,7 @@ class Models:
     def with_dynamic_fields(self, lineage: 'LineageEntries') -> 'Models':
         """Create dynamic model definitions for models referenced in lineage but not defined in models.
 
-        This function enables users to define models with only name and type,
-        then have their fields automatically generated from lineage references.
-
-        Example:
-            models:
-              - name: EmptyModel
-                type: program
-                # props omitted
-
-            lineage:
-              - from: value
-                to: EmptyModel.field1
-              - from: another
-                to: EmptyModel.Child.field2
-
-            Result: EmptyModel will have field1, and a child model Child with field2
+        Note: This method delegates to DynamicFieldGenerator domain service.
 
         Args:
             lineage: LineageEntries コレクション
@@ -285,182 +278,8 @@ class Models:
         Returns:
             新しいModelsインスタンス（動的フィールドが追加されたもの）
         """
-        # Convert to dict for processing
-        existing_models = [m.to_dict() for m in self._models]
-        # Build a map of existing models for quick lookup
-        existing_model_map: Dict[str, Dict[str, Any]] = {}
-
-        def collect_existing_models(models: List[Dict[str, Any]], prefix: str = "") -> None:
-            """Recursively collect existing models into a map."""
-            for m in models:
-                model_path = f"{prefix}.{m['name']}" if prefix else m['name']
-                existing_model_map[model_path] = m
-                if 'children' in m:
-                    collect_existing_models(m['children'], model_path)
-
-        collect_existing_models(existing_models)
-
-        # Track which models need dynamic field generation
-        # Format: {model_path: {field_names_set}}
-        dynamic_fields: Dict[str, Set[str]] = {}
-
-        def extract_field_references(ref: str) -> None:
-            """Extract field references from a lineage reference string.
-
-            Handles:
-            - 'Model.field' -> adds field to Model
-            - 'Model.Child.field' -> adds field to Model.Child (and creates Child if needed)
-            - 'Model#instance.field' -> adds field to Model
-            - 'Model' or 'literal' -> skip (model-level reference or literal)
-            """
-            # Skip literals and model-level references
-            if '.' not in ref:
-                return
-
-            # Check if root model exists in existing_model_map
-            # This prevents literals like "v1.0" from being treated as model references
-            root_model = ref.split('.')[0].split('#')[0]  # Extract root, remove instance if present
-            if root_model not in existing_model_map:
-                # Root model not defined → treat as literal, skip dynamic generation
-                return
-
-            # Handle instance notation: Model#instance.field -> Model.field
-            if '#' in ref:
-                # Remove instance part for model path extraction
-                ref_without_instance = ref.replace('#', '.').replace('..', '.')
-                parts = ref_without_instance.rsplit('.', 1)
-                if len(parts) == 2:
-                    model_path_with_instance, field = parts
-                    # Remove instance identifier from model path
-                    model_path = model_path_with_instance.split('.')[0]
-
-                    # Find the actual field name (last part after the last dot in original ref)
-                    field = ref.split('.')[-1]
-            else:
-                # No instance: split normally
-                parts = ref.rsplit('.', 1)
-                if len(parts) != 2:
-                    return
-                model_path, field = parts
-
-            # Try to traverse the full model path to see if it exists
-            check_parts = model_path.split('.')
-            current_models = existing_models
-            model_def = None
-
-            for i, part in enumerate(check_parts):
-                found = False
-                for m in current_models:
-                    if m['name'] == part:
-                        model_def = m
-                        current_models = m.get('children', [])
-                        found = True
-                        break
-                if not found:
-                    # This part of the path doesn't exist
-                    # Note: If root model doesn't exist, we already returned earlier
-                    # So here, we know that a parent model exists but child doesn't
-                    # Add to dynamic_fields for child creation
-                    if model_path not in dynamic_fields:
-                        dynamic_fields[model_path] = set()
-                    dynamic_fields[model_path].add(field)
-                    return
-
-            # Full path exists, check if it has props
-            if model_def is not None:
-                if 'props' not in model_def or not model_def.get('props'):
-                    if model_path not in dynamic_fields:
-                        dynamic_fields[model_path] = set()
-                    dynamic_fields[model_path].add(field)
-
-        # Process all lineage entries
-        for entry in lineage:
-            # Process 'from' field (LineageEntry.from_refs is already a list)
-            for ref in entry.from_refs:
-                extract_field_references(ref)
-
-            # Process 'to' field
-            if entry.to_ref:
-                extract_field_references(entry.to_ref)
-
-        # Now update existing models with dynamic fields and create missing child models
-        for model_path, fields in dynamic_fields.items():
-            # Navigate to the model definition and add props
-            parts = model_path.split('.')
-            current_models = existing_models
-            model_def = None
-            parent_type = 'program'  # Default type
-            missing_part_index = -1
-
-            for i, part in enumerate(parts):
-                found = False
-                for m in current_models:
-                    if m['name'] == part:
-                        if model_def:
-                            parent_type = model_def.get('type', parent_type)
-                        model_def = m
-                        if i < len(parts) - 1:  # Not the last part, go deeper
-                            if 'children' not in m:
-                                m['children'] = []
-                            current_models = m['children']
-                        found = True
-                        break
-                if not found:
-                    # Model part not found, need to create it
-                    missing_part_index = i
-                    break
-
-            if model_def is not None and missing_part_index < 0:
-                # Full model path exists, update its props
-                if 'props' not in model_def or not model_def.get('props'):
-                    # Print info message
-                    print(f"Info: モデル '{model_path}' はプロパティ未定義のため、lineage参照から動的生成します")
-                    model_def['props'] = sorted(list(fields))
-            elif missing_part_index >= 0 or (model_def is not None and missing_part_index >= 0):
-                # Need to create missing child models
-                # Rebuild from where we left off
-                current_models = existing_models
-                model_def = None
-
-                for i in range(missing_part_index):
-                    for m in current_models:
-                        if m['name'] == parts[i]:
-                            model_def = m
-                            parent_type = m.get('type', parent_type)
-                            if 'children' not in m:
-                                m['children'] = []
-                            current_models = m['children']
-                            break
-
-                # Now create the missing parts
-                for i in range(missing_part_index, len(parts)):
-                    part = parts[i]
-                    # Determine the full path for this model
-                    created_path = '.'.join(parts[:i+1])
-
-                    # Create new child model with inherited type
-                    new_model = {
-                        'name': part,
-                        'type': parent_type,  # Inherit from parent
-                        'props': sorted(list(fields)) if i == len(parts) - 1 else []
-                    }
-
-                    # Add to parent's children
-                    current_models.append(new_model)
-
-                    # Print info message
-                    print(f"Info: モデル '{created_path}' はプロパティ未定義のため、lineage参照から動的生成します")
-
-                    # Prepare for next iteration
-                    if i < len(parts) - 1:
-                        new_model['children'] = []
-                        current_models = new_model['children']
-
-        # Convert modified dicts back to ModelDefinition objects
-        updated_models = [ModelDefinition.from_dict(m) for m in existing_models]
-
-        # Return new Models instance with updated models
-        return Models(updated_models)
+        generator = DynamicFieldGenerator(self, lineage)
+        return generator.generate()
 
     def parse_to_structured_data(
         self,
@@ -473,7 +292,7 @@ class Models:
     ) -> 'ParsedModelsData':
         """Recursively parse models and their children to build model hierarchy.
 
-        Supports model instances via '#' notation (e.g., 'Money#jpy', 'Money#usd').
+        Note: This method delegates to ModelParser domain service.
 
         Args:
             parent_prefix: Parent model path (for nested models)
@@ -481,6 +300,290 @@ class Models:
             csv_model_names: Set of model names loaded from CSV (only these will be filtered)
             model_instances: モデルインスタンスの情報
             parent_instance: Instance identifier from parent model
+            parsed_data: 既存のParsedModelsData（再帰呼び出し用）
+
+        Returns:
+            ParsedModelsData
+        """
+        parser = ModelParser(self, used_fields, csv_model_names, model_instances)
+        return parser.parse(parent_prefix, parent_instance, parsed_data)
+
+
+# ドメインサービス
+
+class DynamicFieldGenerator:
+    """動的フィールド生成のドメインサービス
+
+    モデル定義に props が未定義の場合、lineage参照から自動的にフィールドを生成します。
+    このクラスは Models の責務を超えた複雑なビジネスロジックを担当します。
+    """
+
+    def __init__(self, models: 'Models', lineage: 'LineageEntries'):
+        """
+        Args:
+            models: 既存のModelsコレクション
+            lineage: LineageEntriesコレクション
+        """
+        self.models = models
+        self.lineage = lineage
+
+    def generate(self) -> 'Models':
+        """動的フィールド生成を実行
+
+        Returns:
+            新しいModelsインスタンス（動的フィールドが追加されたもの）
+        """
+        # モデル定義を取得（新しいリストとして複製）
+        model_list = [self._copy_model(m) for m in self.models.to_list()]
+
+        # 既存モデルのマップを構築
+        model_map = self._build_model_map(model_list)
+
+        # 動的フィールドを収集
+        dynamic_fields = self._collect_dynamic_fields(model_map)
+
+        # モデルを更新
+        self._update_models_with_dynamic_fields(model_list, model_map, dynamic_fields)
+
+        return Models(model_list)
+
+    def _copy_model(self, model: ModelDefinition) -> ModelDefinition:
+        """ModelDefinitionを再帰的に複製
+
+        Args:
+            model: 複製元のModelDefinition
+
+        Returns:
+            複製されたModelDefinition
+        """
+        return ModelDefinition(
+            name=model.name,
+            type=model.type,
+            props=list(model.props),  # リストを複製
+            children=[self._copy_model(c) for c in model.children]
+        )
+
+    def _build_model_map(self, models: List[ModelDefinition]) -> Dict[str, ModelDefinition]:
+        """既存モデルのパスマップを構築
+
+        Args:
+            models: モデル定義のリスト
+
+        Returns:
+            {model_path: ModelDefinition} のマップ
+        """
+        model_map: Dict[str, ModelDefinition] = {}
+
+        def collect(model_list: List[ModelDefinition], prefix: str = "") -> None:
+            for m in model_list:
+                path = f"{prefix}.{m.name}" if prefix else m.name
+                model_map[path] = m
+                if m.children:
+                    collect(m.children, path)
+
+        collect(models)
+        return model_map
+
+    def _collect_dynamic_fields(self, model_map: Dict[str, ModelDefinition]) -> Dict[str, Set[str]]:
+        """lineageから動的に生成すべきフィールドを収集
+
+        Args:
+            model_map: モデルパスのマップ
+
+        Returns:
+            {model_path: {field_names}} の辞書
+        """
+        dynamic_fields: Dict[str, Set[str]] = {}
+
+        for entry in self.lineage:
+            # Process 'from' references
+            for ref in entry.from_refs:
+                self._extract_field_reference(ref, model_map, dynamic_fields)
+
+            # Process 'to' reference
+            if entry.to_ref:
+                self._extract_field_reference(entry.to_ref, model_map, dynamic_fields)
+
+        return dynamic_fields
+
+    def _extract_field_reference(
+        self,
+        ref: str,
+        model_map: Dict[str, ModelDefinition],
+        dynamic_fields: Dict[str, Set[str]]
+    ) -> None:
+        """フィールド参照を抽出して動的フィールドマップに追加
+
+        Args:
+            ref: リネージ参照文字列
+            model_map: モデルパスのマップ
+            dynamic_fields: 動的フィールドの蓄積先
+        """
+        # Skip if no field reference
+        if '.' not in ref:
+            return
+
+        # Check if root model exists
+        root_model = ref.split('.')[0].split('#')[0]
+        if root_model not in model_map:
+            return  # Treat as literal
+
+        # Handle instance notation: Model#instance.field -> Model.field
+        if '#' in ref:
+            ref_without_instance = ref.replace('#', '.').replace('..', '.')
+            parts = ref_without_instance.rsplit('.', 1)
+            if len(parts) == 2:
+                model_path_with_instance, _ = parts
+                model_path = model_path_with_instance.split('.')[0]
+                field = ref.split('.')[-1]
+            else:
+                return
+        else:
+            parts = ref.rsplit('.', 1)
+            if len(parts) != 2:
+                return
+            model_path, field = parts
+
+        # Check if model path exists
+        if model_path in model_map:
+            model_def = model_map[model_path]
+            # Add field if props is empty or undefined
+            if not model_def.props:
+                if model_path not in dynamic_fields:
+                    dynamic_fields[model_path] = set()
+                dynamic_fields[model_path].add(field)
+        else:
+            # Model path doesn't exist - need to create child model
+            if model_path not in dynamic_fields:
+                dynamic_fields[model_path] = set()
+            dynamic_fields[model_path].add(field)
+
+    def _update_models_with_dynamic_fields(
+        self,
+        model_list: List[ModelDefinition],
+        model_map: Dict[str, ModelDefinition],
+        dynamic_fields: Dict[str, Set[str]]
+    ) -> None:
+        """動的フィールドでモデルを更新
+
+        Args:
+            model_list: 更新対象のモデルリスト
+            model_map: モデルパスのマップ
+            dynamic_fields: 動的フィールドのマップ
+        """
+        for model_path, fields in dynamic_fields.items():
+            parts = model_path.split('.')
+
+            if model_path in model_map:
+                # Existing model - update props
+                model_def = model_map[model_path]
+                if not model_def.props:
+                    logging.info(f"モデル '{model_path}' はプロパティ未定義のため、lineage参照から動的生成します")
+                    model_def.props.extend(sorted(fields))
+            else:
+                # Need to create missing child models
+                self._create_missing_child_models(model_list, model_map, parts, fields)
+
+    def _create_missing_child_models(
+        self,
+        model_list: List[ModelDefinition],
+        model_map: Dict[str, ModelDefinition],
+        path_parts: List[str],
+        fields: Set[str]
+    ) -> None:
+        """不足している子モデルを作成
+
+        Args:
+            model_list: ルートモデルのリスト
+            model_map: モデルパスのマップ
+            path_parts: モデルパスを分割したリスト
+            fields: 追加するフィールドのセット
+        """
+        # Find where the path exists and where it breaks
+        parent_model = None
+        parent_type = 'program'
+        missing_index = -1
+
+        for i, part in enumerate(path_parts):
+            partial_path = '.'.join(path_parts[:i+1])
+            if partial_path in model_map:
+                parent_model = model_map[partial_path]
+                parent_type = parent_model.type
+            else:
+                missing_index = i
+                break
+
+        if missing_index < 0:
+            return  # All parts exist
+
+        # Create missing child models from missing_index onwards
+        current_parent = parent_model
+        for i in range(missing_index, len(path_parts)):
+            part = path_parts[i]
+            created_path = '.'.join(path_parts[:i+1])
+
+            # Create new child model
+            new_model = ModelDefinition(
+                name=part,
+                type=parent_type,  # Inherit type from parent
+                props=sorted(fields) if i == len(path_parts) - 1 else [],
+                children=[]
+            )
+
+            # Add to parent's children
+            if current_parent:
+                current_parent.children.append(new_model)
+            else:
+                # This shouldn't happen if root model exists
+                model_list.append(new_model)
+
+            # Update model_map
+            model_map[created_path] = new_model
+
+            # Log info message
+            logging.info(f"モデル '{created_path}' はプロパティ未定義のため、lineage参照から動的生成します")
+
+            # Prepare for next iteration
+            current_parent = new_model
+
+
+class ModelParser:
+    """モデル構造解析のドメインサービス
+
+    モデル階層を解析し、Mermaid図生成に必要な構造化データを構築します。
+    このクラスは Models の責務を超えた複雑な解析ロジックを担当します。
+    """
+
+    def __init__(
+        self,
+        models: 'Models',
+        used_fields: Optional['UsedFields'] = None,
+        csv_model_names: Set[str] = None,
+        model_instances: Optional['ModelInstances'] = None
+    ):
+        """
+        Args:
+            models: 解析対象のModelsコレクション
+            used_fields: 使用されているフィールド（フィルタリング用）
+            csv_model_names: CSV由来のモデル名セット
+            model_instances: モデルインスタンスの情報
+        """
+        self.models = models
+        self.used_fields = used_fields
+        self.csv_model_names = csv_model_names or set()
+        self.model_instances = model_instances
+
+    def parse(
+        self,
+        parent_prefix: str = "",
+        parent_instance: str = "",
+        parsed_data: Optional['ParsedModelsData'] = None
+    ) -> 'ParsedModelsData':
+        """モデル階層を解析してParsedModelsDataを構築
+
+        Args:
+            parent_prefix: 親モデルのパス（階層構造用）
+            parent_instance: 親モデルのインスタンス識別子
             parsed_data: 既存のParsedModelsData（再帰呼び出し用）
 
         Returns:
@@ -494,89 +597,226 @@ class Models:
                 model_hierarchy={}
             )
 
-        # Convert UsedFields to dict for easier access (if provided)
-        used_fields_dict = used_fields.to_dict() if used_fields else None
-        model_instances_dict = model_instances.to_dict() if model_instances else {}
+        used_fields_dict = self.used_fields.to_dict() if self.used_fields else None
+        model_instances_dict = self.model_instances.to_dict() if self.model_instances else {}
 
-        for m in self._models:
-            name = m.name
-            mtype = m.type
-            props = m.props
-            children = m.children
-
-            # Build full model path (without instance)
-            full_model_path = f"{parent_prefix}.{name}" if parent_prefix else name
-
-            # Get instances for this model (empty set means no instances)
-            instances = model_instances_dict.get(name, set())
-
-            # If this model has no instances, treat it as a single default instance
-            if not instances:
-                instances = {None}
-
-            # Sort instances alphabetically for deterministic output (None sorts first)
-            sorted_instances = sorted(instances, key=lambda x: (x is not None, x or ''))
-
-            # Process each instance of this model
-            for instance in sorted_instances:
-                # Build instance-specific paths
-                if instance:
-                    instance_path = f"{full_model_path}#{instance}"
-                    instance_id_part = f"_{instance}"
-                else:
-                    instance_path = full_model_path
-                    instance_id_part = ""
-
-                parsed_data.model_types[instance_path] = mtype
-
-                # Store hierarchy info
-                parsed_data.model_hierarchy[instance_path] = {
-                    'parent': parent_prefix if parent_prefix else None,
-                    'children': [f"{full_model_path}.{c.name}" for c in children] if children else [],
-                    'instance': instance
-                }
-
-                # Determine if we should filter fields for this model instance
-                should_filter = (
-                    used_fields_dict is not None and
-                    csv_model_names and
-                    name in csv_model_names and
-                    instance_path in used_fields_dict
-                )
-
-                # Parse fields
-                nodes = []
-                for p in props:
-                    # Apply filtering if applicable
-                    if should_filter:
-                        # Check if this field is actually used
-                        model_used_fields = used_fields_dict.get(instance_path, set())
-                        # '*' means all fields, otherwise check if field is in the set
-                        if '*' not in model_used_fields and p not in model_used_fields:
-                            # Skip this field as it's not used in lineage
-                            continue
-
-                    # Generate node ID with instance
-                    nid = MermaidNode.sanitize_id(f"{full_model_path}{instance_id_part}_{p}".replace(".", "_"))
-                    nodes.append((nid, str(p)))
-
-                    # Map field reference to node ID
-                    if instance:
-                        field_ref = f"{full_model_path}#{instance}.{p}"
-                    else:
-                        field_ref = f"{full_model_path}.{p}"
-                    parsed_data.field_node_ids[field_ref] = nid
-
-                parsed_data.field_nodes_by_model[instance_path] = nodes
-
-            # Recursively parse children (children inherit parent's instance if any)
-            if children:
-                Models(children).parse_to_structured_data(
-                    full_model_path, used_fields, csv_model_names,
-                    model_instances, parent_instance, parsed_data
-                )
+        for m in self.models:
+            self._parse_model(
+                m, parent_prefix, parent_instance,
+                used_fields_dict, model_instances_dict, parsed_data
+            )
 
         return parsed_data
+
+    def _parse_model(
+        self,
+        model: ModelDefinition,
+        parent_prefix: str,
+        parent_instance: str,
+        used_fields_dict: Optional[Dict[str, Set[str]]],
+        model_instances_dict: Dict[str, Set[Optional[str]]],
+        parsed_data: 'ParsedModelsData'
+    ) -> None:
+        """単一モデルを解析
+
+        Args:
+            model: 解析対象のModelDefinition
+            parent_prefix: 親モデルのパス
+            parent_instance: 親インスタンス
+            used_fields_dict: 使用フィールドの辞書
+            model_instances_dict: モデルインスタンスの辞書
+            parsed_data: 蓄積先のParsedModelsData
+        """
+        name = model.name
+        mtype = model.type
+        props = model.props
+        children = model.children
+
+        # Build full model path
+        full_model_path = f"{parent_prefix}.{name}" if parent_prefix else name
+
+        # Get instances for this model
+        instances = model_instances_dict.get(name, set())
+        if not instances:
+            instances = {None}
+
+        # Sort instances for deterministic output
+        sorted_instances = sorted(instances, key=lambda x: (x is not None, x or ''))
+
+        # Process each instance
+        for instance in sorted_instances:
+            self._process_model_instance(
+                instance, full_model_path, mtype, props, children,
+                parent_prefix, used_fields_dict, parsed_data
+            )
+
+        # Recursively parse children
+        if children:
+            child_parser = ModelParser(
+                Models(children),
+                self.used_fields,
+                self.csv_model_names,
+                self.model_instances
+            )
+            child_parser.parse(full_model_path, parent_instance, parsed_data)
+
+    def _process_model_instance(
+        self,
+        instance: Optional[str],
+        full_model_path: str,
+        mtype: str,
+        props: List[str],
+        children: List[ModelDefinition],
+        parent_prefix: str,
+        used_fields_dict: Optional[Dict[str, Set[str]]],
+        parsed_data: 'ParsedModelsData'
+    ) -> None:
+        """モデルインスタンスを処理
+
+        Args:
+            instance: インスタンス識別子（Noneの場合はデフォルト）
+            full_model_path: モデルの完全パス
+            mtype: モデルタイプ
+            props: プロパティリスト
+            children: 子モデルのリスト
+            parent_prefix: 親モデルのパス
+            used_fields_dict: 使用フィールドの辞書
+            parsed_data: 蓄積先のParsedModelsData
+        """
+        # Build instance-specific paths
+        if instance:
+            instance_path = f"{full_model_path}#{instance}"
+            instance_id_part = f"_{instance}"
+        else:
+            instance_path = full_model_path
+            instance_id_part = ""
+
+        # Store model type
+        parsed_data.model_types[instance_path] = mtype
+
+        # Store hierarchy info
+        parsed_data.model_hierarchy[instance_path] = {
+            'parent': parent_prefix if parent_prefix else None,
+            'children': [f"{full_model_path}.{c.name}" for c in children] if children else [],
+            'instance': instance
+        }
+
+        # Parse fields
+        should_filter = self._should_filter_fields(instance_path, full_model_path, used_fields_dict)
+        nodes = self._parse_fields(
+            props, full_model_path, instance, instance_id_part,
+            should_filter, used_fields_dict, parsed_data
+        )
+
+        parsed_data.field_nodes_by_model[instance_path] = nodes
+
+    def _should_filter_fields(
+        self,
+        instance_path: str,
+        full_model_path: str,
+        used_fields_dict: Optional[Dict[str, Set[str]]]
+    ) -> bool:
+        """フィールドをフィルタリングすべきか判定
+
+        Args:
+            instance_path: インスタンスパス
+            full_model_path: モデルの完全パス
+            used_fields_dict: 使用フィールドの辞書
+
+        Returns:
+            フィルタリングすべきかどうか
+        """
+        if used_fields_dict is None or not self.csv_model_names:
+            return False
+
+        # Extract model name from path (last component)
+        model_name = full_model_path.split('.')[-1]
+
+        return (
+            model_name in self.csv_model_names and
+            instance_path in used_fields_dict
+        )
+
+    def _parse_fields(
+        self,
+        props: List[str],
+        full_model_path: str,
+        instance: Optional[str],
+        instance_id_part: str,
+        should_filter: bool,
+        used_fields_dict: Optional[Dict[str, Set[str]]],
+        parsed_data: 'ParsedModelsData'
+    ) -> List[Tuple[str, str]]:
+        """フィールドを解析してノードリストを生成
+
+        Args:
+            props: プロパティリスト
+            full_model_path: モデルの完全パス
+            instance: インスタンス識別子
+            instance_id_part: インスタンスID部分（ノードID生成用）
+            should_filter: フィルタリングすべきかどうか
+            used_fields_dict: 使用フィールドの辞書
+            parsed_data: field_node_idsを更新するためのParsedModelsData
+
+        Returns:
+            (node_id, field_name) のタプルリスト
+        """
+        nodes = []
+
+        # Build instance path for field reference
+        if instance:
+            instance_path = f"{full_model_path}#{instance}"
+        else:
+            instance_path = full_model_path
+
+        for p in props:
+            # Apply filtering if applicable
+            if should_filter:
+                if not self._is_field_used(instance_path, p, used_fields_dict):
+                    continue
+
+            # Generate node ID
+            nid = MermaidNode.sanitize_id(
+                f"{full_model_path}{instance_id_part}_{p}".replace(".", "_")
+            )
+            nodes.append((nid, str(p)))
+
+            # Map field reference to node ID
+            if instance:
+                field_ref = f"{full_model_path}#{instance}.{p}"
+            else:
+                field_ref = f"{full_model_path}.{p}"
+            parsed_data.field_node_ids[field_ref] = nid
+
+        return nodes
+
+    def _is_field_used(
+        self,
+        instance_path: str,
+        field_name: str,
+        used_fields_dict: Optional[Dict[str, Set[str]]]
+    ) -> bool:
+        """フィールドが使用されているか判定
+
+        Args:
+            instance_path: インスタンスパス
+            field_name: フィールド名
+            used_fields_dict: 使用フィールドの辞書
+
+        Returns:
+            フィールドが使用されているかどうか
+        """
+        if used_fields_dict is None:
+            return True
+
+        model_used_fields = used_fields_dict.get(instance_path, set())
+
+        # '*' means all fields are used
+        if '*' in model_used_fields:
+            return True
+
+        # Check if this specific field is used
+        return field_name in model_used_fields
 
 
 @dataclass(frozen=True)
@@ -779,7 +1019,7 @@ class CSVAdapter:
             # Extract model name from filename: *__ModelName.csv
             filename = Path(csv_path).stem
             if "__" not in filename:
-                print(f"Warning: CSV filename '{csv_path}' does not match pattern '論理名__ModelName.csv'", file=sys.stderr)
+                logging.warning(f"CSV filename '{csv_path}' does not match pattern '論理名__ModelName.csv'")
                 return None
 
             model_name = filename.split("__")[-1]
@@ -798,7 +1038,7 @@ class CSVAdapter:
                     continue
 
             if content is None:
-                print(f"Error: Could not decode CSV file '{csv_path}' with any supported encoding", file=sys.stderr)
+                logging.error(f"Could not decode CSV file '{csv_path}' with any supported encoding")
                 return None
 
             # Parse CSV
@@ -809,7 +1049,7 @@ class CSVAdapter:
                     props.append(physical_name)
 
             if not props:
-                print(f"Warning: No properties found in CSV file '{csv_path}'", file=sys.stderr)
+                logging.warning(f"No properties found in CSV file '{csv_path}'")
                 return None
 
             return ModelDefinition(
@@ -819,7 +1059,7 @@ class CSVAdapter:
             )
 
         except Exception as e:
-            print(f"Error loading CSV '{csv_path}': {e}", file=sys.stderr)
+            logging.error(f"Loading CSV '{csv_path}': {e}")
             return None
 
 
@@ -843,7 +1083,7 @@ class OpenAPIAdapter:
         try:
             path = Path(spec_path)
             if not path.exists():
-                print(f"Error: OpenAPI spec file '{spec_path}' does not exist", file=sys.stderr)
+                logging.error(f"OpenAPI spec file '{spec_path}' does not exist")
                 return None
 
             # Load spec file (YAML or JSON)
@@ -853,17 +1093,17 @@ class OpenAPIAdapter:
                 elif path.suffix.lower() == '.json':
                     spec = json.load(f)
                 else:
-                    print(f"Error: Unsupported file format '{path.suffix}' (expected .yaml, .yml, or .json)", file=sys.stderr)
+                    logging.error(f"Unsupported file format '{path.suffix}' (expected .yaml, .yml, or .json)")
                     return None
 
             # Navigate to components/schemas
             if 'components' not in spec:
-                print(f"Warning: No 'components' section in OpenAPI spec '{spec_path}'", file=sys.stderr)
+                logging.warning(f"No 'components' section in OpenAPI spec '{spec_path}'")
                 return None
 
             schemas = spec['components'].get('schemas', {})
             if schema_name not in schemas:
-                print(f"Warning: Schema '{schema_name}' not found in OpenAPI spec '{spec_path}'", file=sys.stderr)
+                logging.warning(f"Schema '{schema_name}' not found in OpenAPI spec '{spec_path}'")
                 return None
 
             schema = schemas[schema_name]
@@ -882,7 +1122,7 @@ class OpenAPIAdapter:
                     # Can be added in future if needed
 
             if not props:
-                print(f"Warning: No properties found in schema '{schema_name}' in '{spec_path}'", file=sys.stderr)
+                logging.warning(f"No properties found in schema '{schema_name}' in '{spec_path}'")
                 return None
 
             # Remove duplicates while preserving order
@@ -895,7 +1135,7 @@ class OpenAPIAdapter:
             )
 
         except Exception as e:
-            print(f"Error loading OpenAPI spec '{spec_path}': {e}", file=sys.stderr)
+            logging.error(f"Loading OpenAPI spec '{spec_path}': {e}")
             return None
 
 
@@ -920,7 +1160,7 @@ class AsyncAPIAdapter:
         try:
             path = Path(spec_path)
             if not path.exists():
-                print(f"Error: AsyncAPI spec file '{spec_path}' does not exist", file=sys.stderr)
+                logging.error(f"AsyncAPI spec file '{spec_path}' does not exist")
                 return None
 
             # Load spec file (YAML or JSON)
@@ -930,17 +1170,17 @@ class AsyncAPIAdapter:
                 elif path.suffix.lower() == '.json':
                     spec = json.load(f)
                 else:
-                    print(f"Error: Unsupported file format '{path.suffix}' (expected .yaml, .yml, or .json)", file=sys.stderr)
+                    logging.error(f"Unsupported file format '{path.suffix}' (expected .yaml, .yml, or .json)")
                     return None
 
             # Navigate to components/schemas
             if 'components' not in spec:
-                print(f"Warning: No 'components' section in AsyncAPI spec '{spec_path}'", file=sys.stderr)
+                logging.warning(f"No 'components' section in AsyncAPI spec '{spec_path}'")
                 return None
 
             schemas = spec['components'].get('schemas', {})
             if schema_name not in schemas:
-                print(f"Warning: Schema '{schema_name}' not found in AsyncAPI spec '{spec_path}'", file=sys.stderr)
+                logging.warning(f"Schema '{schema_name}' not found in AsyncAPI spec '{spec_path}'")
                 return None
 
             schema = schemas[schema_name]
@@ -961,28 +1201,26 @@ class AsyncAPIAdapter:
 
                 # Cycle detection
                 if ref_path in visited:
-                    print(f"Warning: Circular reference detected: {ref_path}", file=sys.stderr)
+                    logging.warning(f"Circular reference detected: {ref_path}")
                     return []
                 visited.add(ref_path)
 
                 # External references (http/https)
                 if ref_path.startswith('http://') or ref_path.startswith('https://'):
-                    print(f"Warning: External reference '{ref_path}' in schema '{schema_name}' is not supported",
-                          file=sys.stderr)
+                    logging.warning(f"External reference '{ref_path}' in schema '{schema_name}' is not supported")
                     return []
 
                 # Only handle internal references
                 if not ref_path.startswith('#/components/schemas/'):
-                    print(f"Warning: Unsupported $ref format '{ref_path}' in schema '{schema_name}' "
-                          f"(expected '#/components/schemas/...')", file=sys.stderr)
+                    logging.warning(f"Unsupported $ref format '{ref_path}' in schema '{schema_name}' "
+                          f"(expected '#/components/schemas/...')")
                     return []
 
                 ref_schema_name = ref_path.split('/')[-1]
 
                 # Schema existence check
                 if ref_schema_name not in schemas:
-                    print(f"Warning: Referenced schema '{ref_schema_name}' not found in AsyncAPI spec '{spec_path}'",
-                          file=sys.stderr)
+                    logging.warning(f"Referenced schema '{ref_schema_name}' not found in AsyncAPI spec '{spec_path}'")
                     return []
 
                 ref_schema = schemas[ref_schema_name]
@@ -1008,7 +1246,7 @@ class AsyncAPIAdapter:
                             props.extend(resolve_ref(item['$ref'], visited))
 
                 if not props:
-                    print(f"Info: Referenced schema '{ref_schema_name}' has no properties", file=sys.stderr)
+                    logging.info(f"Referenced schema '{ref_schema_name}' has no properties")
 
                 # Remove duplicates while preserving order
                 return list(dict.fromkeys(props))
@@ -1039,7 +1277,7 @@ class AsyncAPIAdapter:
                         props.extend(resolve_ref(item['$ref'], visited))
 
             if not props:
-                print(f"Warning: No properties found in schema '{schema_name}' in '{spec_path}'", file=sys.stderr)
+                logging.warning(f"No properties found in schema '{schema_name}' in '{spec_path}'")
                 return None
 
             # Remove duplicates while preserving order
@@ -1052,7 +1290,7 @@ class AsyncAPIAdapter:
             )
 
         except Exception as e:
-            print(f"Error loading AsyncAPI spec '{spec_path}': {e}", file=sys.stderr)
+            logging.error(f"Loading AsyncAPI spec '{spec_path}': {e}")
             return None
 
 
@@ -1156,7 +1394,7 @@ class ModelRepository:
 
         # 見つからなかったモデルを通知
         if missing_models:
-            print(f"Info: The following values will be treated as literals (not found as models): {', '.join(sorted(missing_models))}", file=sys.stderr)
+            logging.info(f"The following values will be treated as literals (not found as models): {', '.join(sorted(missing_models))}")
 
         # Models.merge()で結合
         models = Models.merge(models_list) if models_list else Models([])
@@ -1170,7 +1408,7 @@ class ModelRepository:
         for spec_path in spec_files:
             path = Path(spec_path)
             if not path.exists():
-                print(f"Warning: OpenAPI spec file '{spec_path}' does not exist", file=sys.stderr)
+                logging.warning(f"OpenAPI spec file '{spec_path}' does not exist")
                 continue
 
             try:
@@ -1181,7 +1419,7 @@ class ModelRepository:
                     elif path.suffix.lower() == '.json':
                         spec = json.load(f)
                     else:
-                        print(f"Warning: Unsupported file format '{path.suffix}'", file=sys.stderr)
+                        logging.warning(f"Unsupported file format '{path.suffix}'")
                         continue
 
                 # Get all schemas
@@ -1199,7 +1437,7 @@ class ModelRepository:
                             found_models.add(model_name)
 
             except Exception as e:
-                print(f"Error processing OpenAPI spec '{spec_path}': {e}", file=sys.stderr)
+                logging.error(f"Processing OpenAPI spec '{spec_path}': {e}")
                 continue
 
         return Models(models_list)
@@ -1212,7 +1450,7 @@ class ModelRepository:
         for spec_path in spec_files:
             path = Path(spec_path)
             if not path.exists():
-                print(f"Warning: AsyncAPI spec file '{spec_path}' does not exist", file=sys.stderr)
+                logging.warning(f"AsyncAPI spec file '{spec_path}' does not exist")
                 continue
 
             try:
@@ -1223,7 +1461,7 @@ class ModelRepository:
                     elif path.suffix.lower() == '.json':
                         spec = json.load(f)
                     else:
-                        print(f"Warning: Unsupported file format '{path.suffix}'", file=sys.stderr)
+                        logging.warning(f"Unsupported file format '{path.suffix}'")
                         continue
 
                 # Get all schemas from components/schemas (AsyncAPI 3.0)
@@ -1241,7 +1479,7 @@ class ModelRepository:
                             found_models.add(model_name)
 
             except Exception as e:
-                print(f"Error processing AsyncAPI spec '{spec_path}': {e}", file=sys.stderr)
+                logging.error(f"Processing AsyncAPI spec '{spec_path}': {e}")
                 continue
 
         return Models(models_list)
@@ -1254,14 +1492,14 @@ class ModelRepository:
         for dir_path in program_dirs:
             path = Path(dir_path)
             if not path.exists():
-                print(f"Warning: Program model directory '{dir_path}' does not exist", file=sys.stderr)
+                logging.warning(f"Program model directory '{dir_path}' does not exist")
                 continue
 
             for csv_file in path.rglob("*.csv"):
                 model_def = self.csv_adapter.load_model(str(csv_file), 'program')
                 if model_def and model_def.name in required_models:
                     if model_def.name in models_dict:
-                        print(f"Warning: Duplicate model '{model_def.name}' found in '{csv_file}'", file=sys.stderr)
+                        logging.warning(f"Duplicate model '{model_def.name}' found in '{csv_file}'")
                     else:
                         models_dict[model_def.name] = model_def
 
@@ -1269,14 +1507,14 @@ class ModelRepository:
         for dir_path in datastore_dirs:
             path = Path(dir_path)
             if not path.exists():
-                print(f"Warning: Datastore model directory '{dir_path}' does not exist", file=sys.stderr)
+                logging.warning(f"Datastore model directory '{dir_path}' does not exist")
                 continue
 
             for csv_file in path.rglob("*.csv"):
                 model_def = self.csv_adapter.load_model(str(csv_file), 'datastore')
                 if model_def and model_def.name in required_models:
                     if model_def.name in models_dict:
-                        print(f"Warning: Duplicate model '{model_def.name}' found in '{csv_file}'", file=sys.stderr)
+                        logging.warning(f"Duplicate model '{model_def.name}' found in '{csv_file}'")
                     else:
                         models_dict[model_def.name] = model_def
 
@@ -1455,10 +1693,7 @@ class ParseModelsUseCase:
 
 
 class GenerateMermaidDiagramUseCase:
-    """Mermaid図の生成UseCase"""
-
-    def __init__(self):
-        self.literal_counter = 0
+    """Mermaid図の生成UseCase（ステートレス）"""
 
     def execute(self, parsed_data: ParsedModelsData, lineage: LineageEntries) -> str:
         """Mermaid図の文字列を生成
@@ -1489,6 +1724,7 @@ class GenerateMermaidDiagramUseCase:
 
         # リネージエッジ生成
         model_ref_styles = {}
+        literal_counter = 0  # ローカル変数としてカウンターを初期化
 
         for entry in lineage:
             if not entry.to_ref:
@@ -1502,7 +1738,7 @@ class GenerateMermaidDiagramUseCase:
                 if entry.to_ref not in model_ref_styles:
                     model_ref_styles[entry.to_ref] = parsed_data.model_types[entry.to_ref]
             else:
-                print(f"Warning: Unknown reference '{entry.to_ref}' in lineage", file=sys.stderr)
+                logging.warning(f"Unknown reference '{entry.to_ref}' in lineage")
                 continue
 
             # ソース処理
@@ -1516,7 +1752,7 @@ class GenerateMermaidDiagramUseCase:
                     s_id = parsed_data.field_node_ids[src]
                 else:
                     # リテラル値
-                    s_id = self._ensure_literal(lines, src)
+                    s_id, literal_counter = self._ensure_literal(lines, src, literal_counter)
 
                 # エッジ追加
                 label = entry.transform if i == 0 and entry.transform else ""
@@ -1538,12 +1774,21 @@ class GenerateMermaidDiagramUseCase:
         lines.append("```")
         return "\n".join(lines)
 
-    def _ensure_literal(self, lines: List[str], label: str) -> str:
-        """リテラルノードを作成"""
-        self.literal_counter += 1
-        nid = MermaidNode.sanitize_id(f"lit_{self.literal_counter}")
+    def _ensure_literal(self, lines: List[str], label: str, counter: int) -> Tuple[str, int]:
+        """リテラルノードを作成（ステートレス）
+
+        Args:
+            lines: Mermaid行のリスト
+            label: リテラル値
+            counter: 現在のカウンター値
+
+        Returns:
+            (ノードID, 更新されたカウンター) のタプル
+        """
+        counter += 1
+        nid = MermaidNode.sanitize_id(f"lit_{counter}")
         lines.append(f'  {nid}["{label}"]:::literal')
-        return nid
+        return nid, counter
 
 
 def main(
