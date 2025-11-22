@@ -142,7 +142,7 @@
         { "from": "HttpRequest.amount", "to": "TransactionEntity.amount" },
         { "from": "TransactionEntity.amount", "to": "transactions.amount" }
       ],
-      "$comment": "CSV-based example: models loaded from CSV files using --program-model-dirs and --datastore-model-dirs"
+      "$comment": "CSV-based example: models loaded from CSV files using --program-model-dir and --datastore-model-dir"
     },
     {
       "spec": "lineage-v1",

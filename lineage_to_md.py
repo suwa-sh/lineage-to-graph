@@ -167,6 +167,9 @@ def load_model_from_openapi(
             print(f"Warning: No properties found in schema '{schema_name}' in '{spec_path}'", file=sys.stderr)
             return None
 
+        # Remove duplicates while preserving order
+        props = list(dict.fromkeys(props))
+
         return {
             'name': schema_name,
             'type': model_type,
@@ -179,35 +182,36 @@ def load_model_from_openapi(
 
 def load_model_from_asyncapi(
     spec_path: str,
-    message_name: str,
+    schema_name: str,
     model_type: str
 ) -> Optional[Dict[str, Any]]:
-    """Load model definition from AsyncAPI specification.
+    """Load model definition from AsyncAPI 3.0 specification.
 
-    Supports AsyncAPI 2.x and 3.x in YAML or JSON format.
-    Extracts properties from components/messages/<message_name>/payload.
+    Supports AsyncAPI 3.x in YAML or JSON format.
+    Extracts properties from components/schemas/<schema_name>.
+    Supports $ref resolution for nested schema references.
 
     Args:
         spec_path: Path to AsyncAPI spec file (.yaml, .yml, .json)
-        message_name: Message name in components/messages
+        schema_name: Schema name in components/schemas
         model_type: 'program' or 'datastore'
 
     Returns:
         Model definition dict {name, type, props} or None if failed
 
     Example:
-        # asyncapi.yaml:
+        # asyncapi.yaml (AsyncAPI 3.0):
         components:
-          messages:
-            UserCreated:
-              payload:
-                type: object
-                properties:
-                  userId: {type: string}
-                  name: {type: string}
+          schemas:
+            KafkaRemittance:
+              type: object
+              properties:
+                sbSystemId: {type: string}
+                remittance:
+                  $ref: "#/components/schemas/Remittance"
 
-        load_model_from_asyncapi('asyncapi.yaml', 'UserCreated', 'program')
-        # Returns: {'name': 'UserCreated', 'type': 'program', 'props': ['userId', 'name']}
+        load_model_from_asyncapi('asyncapi.yaml', 'KafkaRemittance', 'program')
+        # Returns: {'name': 'KafkaRemittance', 'type': 'program', 'props': ['sbSystemId', 'remittance']}
     """
     try:
         path = Path(spec_path)
@@ -225,31 +229,120 @@ def load_model_from_asyncapi(
                 print(f"Error: Unsupported file format '{path.suffix}' (expected .yaml, .yml, or .json)", file=sys.stderr)
                 return None
 
-        # Navigate to components/messages
+        # Navigate to components/schemas
         if 'components' not in spec:
             print(f"Warning: No 'components' section in AsyncAPI spec '{spec_path}'", file=sys.stderr)
             return None
 
-        messages = spec['components'].get('messages', {})
-        if message_name not in messages:
-            print(f"Warning: Message '{message_name}' not found in AsyncAPI spec '{spec_path}'", file=sys.stderr)
+        schemas = spec['components'].get('schemas', {})
+        if schema_name not in schemas:
+            print(f"Warning: Schema '{schema_name}' not found in AsyncAPI spec '{spec_path}'", file=sys.stderr)
             return None
 
-        message = messages[message_name]
+        schema = schemas[schema_name]
 
-        # Extract properties from payload
+        # Helper function to resolve $ref recursively
+        def resolve_ref(ref_path: str, visited: Optional[set] = None) -> List[str]:
+            """Recursively resolve $ref and extract properties.
+
+            Args:
+                ref_path: The $ref path (e.g., "#/components/schemas/EventMetadata")
+                visited: Set of already visited refs to detect cycles
+
+            Returns:
+                List of property names from the referenced schema
+            """
+            if visited is None:
+                visited = set()
+
+            # Cycle detection
+            if ref_path in visited:
+                print(f"Warning: Circular reference detected: {ref_path}", file=sys.stderr)
+                return []
+            visited.add(ref_path)
+
+            # External references (http/https)
+            if ref_path.startswith('http://') or ref_path.startswith('https://'):
+                print(f"Warning: External reference '{ref_path}' in schema '{schema_name}' is not supported",
+                      file=sys.stderr)
+                return []
+
+            # Only handle internal references
+            if not ref_path.startswith('#/components/schemas/'):
+                print(f"Warning: Unsupported $ref format '{ref_path}' in schema '{schema_name}' "
+                      f"(expected '#/components/schemas/...')", file=sys.stderr)
+                return []
+
+            ref_schema_name = ref_path.split('/')[-1]
+
+            # Schema existence check
+            if ref_schema_name not in schemas:
+                print(f"Warning: Referenced schema '{ref_schema_name}' not found in AsyncAPI spec '{spec_path}'",
+                      file=sys.stderr)
+                return []
+
+            ref_schema = schemas[ref_schema_name]
+            props = []
+
+            # Extract direct properties
+            if 'properties' in ref_schema:
+                for prop_name, prop_def in ref_schema['properties'].items():
+                    if isinstance(prop_def, dict) and '$ref' in prop_def:
+                        # Nested $ref: resolve recursively and flatten
+                        nested_props = resolve_ref(prop_def['$ref'], visited)
+                        # Flatten nested properties with dot notation
+                        props.extend([f"{prop_name}.{p}" for p in nested_props] if nested_props else [prop_name])
+                    else:
+                        props.append(prop_name)
+
+            # Handle allOf
+            if 'allOf' in ref_schema:
+                for item in ref_schema['allOf']:
+                    if 'properties' in item:
+                        props.extend(item['properties'].keys())
+                    if '$ref' in item:
+                        props.extend(resolve_ref(item['$ref'], visited))
+
+            if not props:
+                print(f"Info: Referenced schema '{ref_schema_name}' has no properties", file=sys.stderr)
+
+            # Remove duplicates while preserving order
+            return list(dict.fromkeys(props))
+
+        # Extract properties
         props = []
-        if 'payload' in message:
-            payload = message['payload']
-            if 'properties' in payload:
-                props = list(payload['properties'].keys())
+        # Initialize visited set with current schema to detect circular references
+        current_schema_ref = f"#/components/schemas/{schema_name}"
+        visited = {current_schema_ref}
+
+        if 'properties' in schema:
+            for prop_name, prop_def in schema['properties'].items():
+                if isinstance(prop_def, dict) and '$ref' in prop_def:
+                    # Handle $ref in properties
+                    nested_props = resolve_ref(prop_def['$ref'], visited)
+                    # Flatten nested properties with dot notation
+                    props.extend([f"{prop_name}.{p}" for p in nested_props] if nested_props else [prop_name])
+                else:
+                    props.append(prop_name)
+
+        # Handle allOf (merge properties from referenced schemas)
+        if 'allOf' in schema:
+            for item in schema['allOf']:
+                if 'properties' in item:
+                    props.extend(item['properties'].keys())
+                # Handle $ref in allOf with improved error handling
+                if '$ref' in item:
+                    props.extend(resolve_ref(item['$ref'], visited))
 
         if not props:
-            print(f"Warning: No properties found in message '{message_name}' payload in '{spec_path}'", file=sys.stderr)
+            print(f"Warning: No properties found in schema '{schema_name}' in '{spec_path}'", file=sys.stderr)
             return None
 
+        # Remove duplicates while preserving order
+        props = list(dict.fromkeys(props))
+
         return {
-            'name': message_name,
+            'name': schema_name,
             'type': model_type,
             'props': props
         }
@@ -751,7 +844,9 @@ def find_asyncapi_models(
     required_models: Set[str],
     default_type: str = 'program'
 ) -> Dict[str, Dict[str, Any]]:
-    """Find and load model definitions from AsyncAPI specification files.
+    """Find and load model definitions from AsyncAPI 3.0 specification files.
+
+    Searches components/schemas for model definitions.
 
     Args:
         spec_files: List of AsyncAPI spec file paths
@@ -780,15 +875,15 @@ def find_asyncapi_models(
                     print(f"Warning: Unsupported file format '{path.suffix}'", file=sys.stderr)
                     continue
 
-            # Get all messages
-            if 'components' not in spec or 'messages' not in spec['components']:
+            # Get all schemas from components/schemas (AsyncAPI 3.0)
+            if 'components' not in spec or 'schemas' not in spec['components']:
                 continue
 
-            messages = spec['components']['messages']
+            schemas = spec['components']['schemas']
 
             # Load required models
             for model_name in required_models:
-                if model_name in messages and model_name not in models:
+                if model_name in schemas and model_name not in models:
                     model_def = load_model_from_asyncapi(spec_path, model_name, default_type)
                     if model_def:
                         models[model_name] = model_def
@@ -922,8 +1017,11 @@ def parse_models_recursive(
         if not instances:
             instances = {None}
 
+        # Sort instances alphabetically for deterministic output (None sorts first)
+        sorted_instances = sorted(instances, key=lambda x: (x is not None, x or ''))
+
         # Process each instance of this model
-        for instance in instances:
+        for instance in sorted_instances:
             # Build instance-specific paths
             if instance:
                 instance_path = f"{full_model_path}#{instance}"
@@ -1044,10 +1142,10 @@ def generate_subgraph(
 def main(
     input_yaml: str,
     output_md: str,
-    program_model_dirs: Optional[List[str]] = None,
-    datastore_model_dirs: Optional[List[str]] = None,
-    openapi_specs: Optional[List[str]] = None,
-    asyncapi_specs: Optional[List[str]] = None,
+    program_model_dir: Optional[List[str]] = None,
+    datastore_model_dir: Optional[List[str]] = None,
+    openapi_spec: Optional[List[str]] = None,
+    asyncapi_spec: Optional[List[str]] = None,
     show_all_props: bool = False
 ) -> None:
     """Convert YAML lineage definition to Mermaid Markdown diagram.
@@ -1055,10 +1153,10 @@ def main(
     Args:
         input_yaml: Path to input YAML file
         output_md: Path to output Markdown file
-        program_model_dirs: List of directories containing program model CSVs
-        datastore_model_dirs: List of directories containing datastore model CSVs
-        openapi_specs: List of OpenAPI specification files
-        asyncapi_specs: List of AsyncAPI specification files
+        program_model_dir: List of directories containing program model CSVs
+        datastore_model_dir: List of directories containing datastore model CSVs
+        openapi_spec: List of OpenAPI specification files
+        asyncapi_spec: List of AsyncAPI specification files
         show_all_props: If True, show all properties; if False, show only used fields for CSV models
     """
     data = yaml.safe_load(Path(input_yaml).read_text(encoding="utf-8"))
@@ -1087,9 +1185,9 @@ def main(
         # This ensures that API specs take precedence over CSV files
 
         # 1. Load from OpenAPI specs (program type by default)
-        if openapi_specs:
+        if openapi_spec:
             openapi_models = find_openapi_models(
-                openapi_specs or [],
+                openapi_spec or [],
                 missing_models,
                 default_type='program'
             )
@@ -1098,9 +1196,9 @@ def main(
             missing_models -= set(openapi_models.keys())
 
         # 2. Load from AsyncAPI specs (program type by default)
-        if asyncapi_specs:
+        if asyncapi_spec:
             asyncapi_models = find_asyncapi_models(
-                asyncapi_specs or [],
+                asyncapi_spec or [],
                 missing_models,
                 default_type='program'
             )
@@ -1109,10 +1207,10 @@ def main(
             missing_models -= set(asyncapi_models.keys())
 
         # 3. Load from CSV directories (last resort)
-        if program_model_dirs or datastore_model_dirs:
+        if program_model_dir or datastore_model_dir:
             csv_models = find_model_csvs(
-                program_model_dirs or [],
-                datastore_model_dirs or [],
+                program_model_dir or [],
+                datastore_model_dir or [],
                 missing_models
             )
 
@@ -1172,19 +1270,20 @@ def main(
     ]
 
     # Generate subgraphs only for root-level models (those without parents)
-    for model_path in model_hierarchy:
+    # Sort model paths for deterministic output order
+    for model_path in sorted(model_hierarchy.keys()):
         if model_hierarchy[model_path]['parent'] is None:
             subgraph_lines = generate_subgraph(model_path, model_types, field_nodes_by_model, model_hierarchy)
             lines.extend(subgraph_lines)
             lines.append("")
 
-    literal_nodes = {}
+    literal_counter = 0
     def ensure_literal(label: str) -> str:
-        nid = literal_nodes.get(label)
-        if nid: return nid
-        nid = slug(f"lit_{label}")
-        lines.append(f'  {nid}["{label}"]:::literal')
-        literal_nodes[label] = nid
+        """Create a unique literal node for each lineage entry with same label."""
+        nonlocal literal_counter
+        literal_counter += 1
+        nid = slug(f"lit_{literal_counter}")  # ノードIDは連番で一意に
+        lines.append(f'  {nid}["{label}"]:::literal')  # ラベルは元のテキスト
         return nid
 
     def is_model_field(token: str) -> bool:
@@ -1269,49 +1368,49 @@ Examples:
 
   # CSV mode
   python lineage_to_md.py lineage.yml output.md \\
-    --program-model-dirs data/レイアウト \\
-    --datastore-model-dirs data/テーブル定義
+    --program-model-dir data/レイアウト \\
+    --datastore-model-dir data/テーブル定義
 
   # OpenAPI mode
   python lineage_to_md.py lineage.yml output.md \\
-    --openapi-specs data/openapi/user-api.yaml
+    --openapi-spec data/openapi/user-api.yaml
 
   # AsyncAPI mode
   python lineage_to_md.py lineage.yml output.md \\
-    --asyncapi-specs data/asyncapi/events.yaml
+    --asyncapi-spec data/asyncapi/events.yaml
 
   # Mixed mode (YAML + CSV + OpenAPI + AsyncAPI)
   python lineage_to_md.py lineage.yml output.md \\
-    --program-model-dirs data/レイアウト \\
-    --openapi-specs data/openapi/api.yaml \\
-    --asyncapi-specs data/asyncapi/events.yaml
+    --program-model-dir data/レイアウト \\
+    --openapi-spec data/openapi/api.yaml \\
+    --asyncapi-spec data/asyncapi/events.yaml
 """
     )
 
     parser.add_argument("input_yaml", help="Path to input YAML file")
     parser.add_argument("output_md", help="Path to output Markdown file")
     parser.add_argument(
-        "--program-model-dirs", "-p",
+        "--program-model-dir", "-p",
         action="append",
-        dest="program_model_dirs",
+        dest="program_model_dir",
         help="Directory containing program model CSV files (can be specified multiple times)"
     )
     parser.add_argument(
-        "--datastore-model-dirs", "-d",
+        "--datastore-model-dir", "-d",
         action="append",
-        dest="datastore_model_dirs",
+        dest="datastore_model_dir",
         help="Directory containing datastore model CSV files (can be specified multiple times)"
     )
     parser.add_argument(
-        "--openapi-specs", "-o",
+        "--openapi-spec", "-o",
         action="append",
-        dest="openapi_specs",
+        dest="openapi_spec",
         help="OpenAPI specification file (YAML/JSON) (can be specified multiple times)"
     )
     parser.add_argument(
-        "--asyncapi-specs", "-a",
+        "--asyncapi-spec", "-a",
         action="append",
-        dest="asyncapi_specs",
+        dest="asyncapi_spec",
         help="AsyncAPI specification file (YAML/JSON) (can be specified multiple times)"
     )
     parser.add_argument(
@@ -1325,9 +1424,9 @@ Examples:
     main(
         args.input_yaml,
         args.output_md,
-        program_model_dirs=args.program_model_dirs or [],
-        datastore_model_dirs=args.datastore_model_dirs or [],
-        openapi_specs=args.openapi_specs or [],
-        asyncapi_specs=args.asyncapi_specs or [],
+        program_model_dir=args.program_model_dir or [],
+        datastore_model_dir=args.datastore_model_dir or [],
+        openapi_spec=args.openapi_spec or [],
+        asyncapi_spec=args.asyncapi_spec or [],
         show_all_props=args.show_all_props
     )

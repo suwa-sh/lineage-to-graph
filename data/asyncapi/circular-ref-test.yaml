@@ -1,0 +1,34 @@
+asyncapi: 3.0.0
+info:
+  title: Circular Reference Test
+  version: 1.0.0
+  description: Test case for circular reference detection in $ref resolution
+
+components:
+  schemas:
+    # 単純な循環参照: NodeA → NodeB → NodeA
+    NodeA:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Node A ID
+        name:
+          type: string
+          description: Node A name
+        nodeB:
+          $ref: "#/components/schemas/NodeB"
+          description: Reference to Node B (causes circular reference)
+
+    NodeB:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Node B ID
+        value:
+          type: string
+          description: Node B value
+        nodeA:
+          $ref: "#/components/schemas/NodeA"
+          description: Reference to Node A (circular!)
