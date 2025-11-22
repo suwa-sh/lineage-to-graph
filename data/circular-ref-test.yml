@@ -1,0 +1,25 @@
+# Circular Reference Test
+# Tests that circular $ref references are properly detected and handled
+#
+# Expected behavior:
+# - Warning message: "Circular reference detected: #/components/schemas/NodeA"
+# - Program completes without crashing
+# - NodeA and NodeB properties are extracted (excluding the circular parts)
+#
+# Run:
+# python lineage_to_md.py data/circular-ref-test.yml /tmp/circular_test.md \
+#   --asyncapi-spec data/asyncapi/circular-ref-test.yaml
+
+spec: lineage-v1
+
+models: []
+
+lineage:
+  - from: test_value_1
+    to: NodeA.id
+  - from: test_value_2
+    to: NodeA.name
+  - from: test_value_3
+    to: NodeB.id
+  - from: test_value_4
+    to: NodeB.value

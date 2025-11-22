@@ -22,6 +22,7 @@ declare -A TEST_COMMANDS=(
   ["api_example"]="python lineage_to_md.py data/api_example.yml -o data/openapi/user-api.yaml -a data/asyncapi/user-events.yaml"
   ["dynamic-fields"]="python lineage_to_md.py data/dynamic-fields.yml"
   ["etl-pipeline"]="python lineage_to_md.py data/etl-pipeline.yml"
+  ["circular-ref"]="python lineage_to_md.py data/circular-ref-test.yml -a data/asyncapi/circular-ref-test.yaml"
 )
 
 # Test execution order (corresponding to README.md "個別生成" section)
@@ -34,6 +35,7 @@ TEST_ORDER=(
   "api_example"
   "dynamic-fields"
   "etl-pipeline"
+  "circular-ref"
 )
 
 # Check for update mode

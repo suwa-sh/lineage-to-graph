@@ -289,7 +289,7 @@ def load_model_from_asyncapi(
                 for prop_name, prop_def in ref_schema['properties'].items():
                     if isinstance(prop_def, dict) and '$ref' in prop_def:
                         # Nested $ref: resolve recursively and flatten
-                        nested_props = resolve_ref(prop_def['$ref'], visited.copy())
+                        nested_props = resolve_ref(prop_def['$ref'], visited)
                         # Flatten nested properties with dot notation
                         props.extend([f"{prop_name}.{p}" for p in nested_props] if nested_props else [prop_name])
                     else:
@@ -301,7 +301,7 @@ def load_model_from_asyncapi(
                     if 'properties' in item:
                         props.extend(item['properties'].keys())
                     if '$ref' in item:
-                        props.extend(resolve_ref(item['$ref'], visited.copy()))
+                        props.extend(resolve_ref(item['$ref'], visited))
 
             if not props:
                 print(f"Info: Referenced schema '{ref_schema_name}' has no properties", file=sys.stderr)
@@ -311,11 +311,15 @@ def load_model_from_asyncapi(
 
         # Extract properties
         props = []
+        # Initialize visited set with current schema to detect circular references
+        current_schema_ref = f"#/components/schemas/{schema_name}"
+        visited = {current_schema_ref}
+
         if 'properties' in schema:
             for prop_name, prop_def in schema['properties'].items():
                 if isinstance(prop_def, dict) and '$ref' in prop_def:
                     # Handle $ref in properties
-                    nested_props = resolve_ref(prop_def['$ref'])
+                    nested_props = resolve_ref(prop_def['$ref'], visited)
                     # Flatten nested properties with dot notation
                     props.extend([f"{prop_name}.{p}" for p in nested_props] if nested_props else [prop_name])
                 else:
@@ -328,7 +332,7 @@ def load_model_from_asyncapi(
                     props.extend(item['properties'].keys())
                 # Handle $ref in allOf with improved error handling
                 if '$ref' in item:
-                    props.extend(resolve_ref(item['$ref']))
+                    props.extend(resolve_ref(item['$ref'], visited))
 
         if not props:
             print(f"Warning: No properties found in schema '{schema_name}' in '{spec_path}'", file=sys.stderr)
@@ -1138,10 +1142,10 @@ def generate_subgraph(
 def main(
     input_yaml: str,
     output_md: str,
-    program_model_dirs: Optional[List[str]] = None,
-    datastore_model_dirs: Optional[List[str]] = None,
-    openapi_specs: Optional[List[str]] = None,
-    asyncapi_specs: Optional[List[str]] = None,
+    program_model_dir: Optional[List[str]] = None,
+    datastore_model_dir: Optional[List[str]] = None,
+    openapi_spec: Optional[List[str]] = None,
+    asyncapi_spec: Optional[List[str]] = None,
     show_all_props: bool = False
 ) -> None:
     """Convert YAML lineage definition to Mermaid Markdown diagram.
@@ -1149,10 +1153,10 @@ def main(
     Args:
         input_yaml: Path to input YAML file
         output_md: Path to output Markdown file
-        program_model_dirs: List of directories containing program model CSVs
-        datastore_model_dirs: List of directories containing datastore model CSVs
-        openapi_specs: List of OpenAPI specification files
-        asyncapi_specs: List of AsyncAPI specification files
+        program_model_dir: List of directories containing program model CSVs
+        datastore_model_dir: List of directories containing datastore model CSVs
+        openapi_spec: List of OpenAPI specification files
+        asyncapi_spec: List of AsyncAPI specification files
         show_all_props: If True, show all properties; if False, show only used fields for CSV models
     """
     data = yaml.safe_load(Path(input_yaml).read_text(encoding="utf-8"))
@@ -1181,9 +1185,9 @@ def main(
         # This ensures that API specs take precedence over CSV files
 
         # 1. Load from OpenAPI specs (program type by default)
-        if openapi_specs:
+        if openapi_spec:
             openapi_models = find_openapi_models(
-                openapi_specs or [],
+                openapi_spec or [],
                 missing_models,
                 default_type='program'
             )
@@ -1192,9 +1196,9 @@ def main(
             missing_models -= set(openapi_models.keys())
 
         # 2. Load from AsyncAPI specs (program type by default)
-        if asyncapi_specs:
+        if asyncapi_spec:
             asyncapi_models = find_asyncapi_models(
-                asyncapi_specs or [],
+                asyncapi_spec or [],
                 missing_models,
                 default_type='program'
             )
@@ -1203,10 +1207,10 @@ def main(
             missing_models -= set(asyncapi_models.keys())
 
         # 3. Load from CSV directories (last resort)
-        if program_model_dirs or datastore_model_dirs:
+        if program_model_dir or datastore_model_dir:
             csv_models = find_model_csvs(
-                program_model_dirs or [],
-                datastore_model_dirs or [],
+                program_model_dir or [],
+                datastore_model_dir or [],
                 missing_models
             )
 
@@ -1388,25 +1392,25 @@ Examples:
     parser.add_argument(
         "--program-model-dir", "-p",
         action="append",
-        dest="program_model_dirs",
+        dest="program_model_dir",
         help="Directory containing program model CSV files (can be specified multiple times)"
     )
     parser.add_argument(
         "--datastore-model-dir", "-d",
         action="append",
-        dest="datastore_model_dirs",
+        dest="datastore_model_dir",
         help="Directory containing datastore model CSV files (can be specified multiple times)"
     )
     parser.add_argument(
         "--openapi-spec", "-o",
         action="append",
-        dest="openapi_specs",
+        dest="openapi_spec",
         help="OpenAPI specification file (YAML/JSON) (can be specified multiple times)"
     )
     parser.add_argument(
         "--asyncapi-spec", "-a",
         action="append",
-        dest="asyncapi_specs",
+        dest="asyncapi_spec",
         help="AsyncAPI specification file (YAML/JSON) (can be specified multiple times)"
     )
     parser.add_argument(
@@ -1420,9 +1424,9 @@ Examples:
     main(
         args.input_yaml,
         args.output_md,
-        program_model_dirs=args.program_model_dirs or [],
-        datastore_model_dirs=args.datastore_model_dirs or [],
-        openapi_specs=args.openapi_specs or [],
-        asyncapi_specs=args.asyncapi_specs or [],
+        program_model_dir=args.program_model_dir or [],
+        datastore_model_dir=args.datastore_model_dir or [],
+        openapi_spec=args.openapi_spec or [],
+        asyncapi_spec=args.asyncapi_spec or [],
         show_all_props=args.show_all_props
     )
