@@ -8,26 +8,6 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any, Set
 from dataclasses import dataclass, field
 
-def slug(s: str) -> str:
-    """Generate safe Mermaid identifier from string.
-
-    Supports Japanese characters by preserving them in the identifier.
-    Only replaces symbols and whitespace with underscores.
-    """
-    s = str(s).replace("::", "_")
-    # 日本語文字を保持しつつ、スペースや記号のみを "_" に変換
-    # [\s\-./\\()[\]{}]+ = スペース、ハイフン、ドット、スラッシュ、括弧など
-    s = re.sub(r"[\s\-./\\()\[\]{}]+", "_", s)
-    # 連続するアンダースコアを1つにまとめる
-    s = re.sub(r"_+", "_", s).strip("_")
-    if not s:
-        s = "id"
-    # 数字で始まる場合は "n_" を付加
-    if re.match(r"^[0-9]", s):
-        s = "n_" + s
-    return s
-
-
 # ============================================
 # Domain Layer
 # ============================================
@@ -42,6 +22,40 @@ class ModelDefinition:
     props: List[str] = field(default_factory=list)
     children: List[ModelDefinition] = field(default_factory=list)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """自身を辞書に変換（シリアライズ）
+
+        Returns:
+            辞書形式のモデル定義
+        """
+        result = {
+            'name': self.name,
+            'type': self.type,
+            'props': self.props
+        }
+        if self.children:
+            result['children'] = [c.to_dict() for c in self.children]
+        return result
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> ModelDefinition:
+        """辞書から生成（デシリアライズ）
+
+        Args:
+            data: 辞書形式のモデル定義
+
+        Returns:
+            ModelDefinitionオブジェクト
+        """
+        children_data = data.get('children', [])
+        children = [ModelDefinition.from_dict(c) for c in children_data]
+        return ModelDefinition(
+            name=data['name'],
+            type=data.get('type', 'datastore'),
+            props=data.get('props', []),
+            children=children
+        )
+
 
 @dataclass
 class LineageEntry:
@@ -50,9 +64,30 @@ class LineageEntry:
     to_ref: str
     transform: Optional[str] = None
 
+    def to_dict(self) -> Dict[str, Any]:
+        """自身を辞書に変換（シリアライズ）
+
+        Returns:
+            辞書形式のリネージエントリ
+        """
+        result = {
+            'from': self.from_refs,
+            'to': self.to_ref
+        }
+        if self.transform:
+            result['transform'] = self.transform
+        return result
+
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> LineageEntry:
-        """辞書からLineageEntryを生成"""
+        """辞書からLineageEntryを生成（デシリアライズ）
+
+        Args:
+            data: 辞書形式のリネージエントリ
+
+        Returns:
+            LineageEntryオブジェクト
+        """
         from_val = data.get('from', [])
         if isinstance(from_val, str):
             from_val = [from_val]
@@ -142,6 +177,45 @@ class MermaidNode:
     def to_mermaid_line(self) -> str:
         """Mermaid行を生成"""
         return f'{self.node_id}["{self.label}"]:::{self.style_class}'
+
+    @staticmethod
+    def sanitize_id(s: str) -> str:
+        """Generate safe Mermaid identifier from string.
+
+        Supports Japanese characters by preserving them in the identifier.
+        Only replaces symbols and whitespace with underscores.
+
+        Args:
+            s: 元の文字列
+
+        Returns:
+            Mermaid識別子として安全な文字列
+        """
+        s = str(s).replace("::", "_")
+        # 日本語文字を保持しつつ、スペースや記号のみを "_" に変換
+        # [\s\-./\\()[\]{}]+ = スペース、ハイフン、ドット、スラッシュ、括弧など
+        s = re.sub(r"[\s\-./\\()\[\]{}]+", "_", s)
+        # 連続するアンダースコアを1つにまとめる
+        s = re.sub(r"_+", "_", s).strip("_")
+        if not s:
+            s = "id"
+        # 数字で始まる場合は "n_" を付加
+        if re.match(r"^[0-9]", s):
+            s = "n_" + s
+        return s
+
+
+# Backward compatibility wrapper
+def slug(s: str) -> str:
+    """Generate safe Mermaid identifier from string.
+
+    DEPRECATED: Use MermaidNode.sanitize_id() instead.
+    This function is kept for backward compatibility.
+
+    Supports Japanese characters by preserving them in the identifier.
+    Only replaces symbols and whitespace with underscores.
+    """
+    return MermaidNode.sanitize_id(s)
 
 
 # ファーストクラスコレクション
@@ -269,11 +343,15 @@ class UsedFields:
 
 
 # ============================================================================
-# Utility Layer - Conversion Helpers
+# Utility Layer - Conversion Helpers (Backward Compatibility Wrappers)
 # ============================================================================
+# これらの関数はドメインメソッドを呼び出すラッパーです。
+# 将来的にはこれらを削除し、ドメインメソッドを直接使用します。
 
 def model_to_dict(m: ModelDefinition) -> Dict[str, Any]:
     """ModelDefinitionを辞書に変換（再帰的）
+
+    DEPRECATED: Use ModelDefinition.to_dict() instead.
 
     Args:
         m: 変換するModelDefinition
@@ -281,18 +359,13 @@ def model_to_dict(m: ModelDefinition) -> Dict[str, Any]:
     Returns:
         辞書形式のモデル定義
     """
-    result = {
-        'name': m.name,
-        'type': m.type,
-        'props': m.props
-    }
-    if m.children:
-        result['children'] = [model_to_dict(c) for c in m.children]
-    return result
+    return m.to_dict()
 
 
 def lineage_to_dict(entry: LineageEntry) -> Dict[str, Any]:
     """LineageEntryを辞書に変換
+
+    DEPRECATED: Use LineageEntry.to_dict() instead.
 
     Args:
         entry: 変換するLineageEntry
@@ -300,17 +373,13 @@ def lineage_to_dict(entry: LineageEntry) -> Dict[str, Any]:
     Returns:
         辞書形式のリネージエントリ
     """
-    result = {
-        'from': entry.from_refs,
-        'to': entry.to_ref
-    }
-    if entry.transform:
-        result['transform'] = entry.transform
-    return result
+    return entry.to_dict()
 
 
 def dict_to_model(data: Dict[str, Any]) -> ModelDefinition:
     """辞書からModelDefinitionを生成（再帰的）
+
+    DEPRECATED: Use ModelDefinition.from_dict() instead.
 
     Args:
         data: 辞書形式のモデル定義
@@ -318,14 +387,7 @@ def dict_to_model(data: Dict[str, Any]) -> ModelDefinition:
     Returns:
         ModelDefinitionオブジェクト
     """
-    children_data = data.get('children', [])
-    children = [dict_to_model(c) for c in children_data]
-    return ModelDefinition(
-        name=data['name'],
-        type=data.get('type', 'datastore'),
-        props=data.get('props', []),
-        children=children
-    )
+    return ModelDefinition.from_dict(data)
 
 
 # ============================================================================
