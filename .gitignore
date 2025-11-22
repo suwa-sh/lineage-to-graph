@@ -45,6 +45,7 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+coverage.json
 *.cover
 *.py.cover
 .hypothesis/
@@ -210,3 +211,4 @@ __marimo__/
 .claude/settings.local.json
 data/output/
 test/**/actual/
+.serena/
