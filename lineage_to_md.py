@@ -167,6 +167,9 @@ def load_model_from_openapi(
             print(f"Warning: No properties found in schema '{schema_name}' in '{spec_path}'", file=sys.stderr)
             return None
 
+        # Remove duplicates while preserving order
+        props = list(dict.fromkeys(props))
+
         return {
             'name': schema_name,
             'type': model_type,
@@ -303,7 +306,8 @@ def load_model_from_asyncapi(
             if not props:
                 print(f"Info: Referenced schema '{ref_schema_name}' has no properties", file=sys.stderr)
 
-            return props
+            # Remove duplicates while preserving order
+            return list(dict.fromkeys(props))
 
         # Extract properties
         props = []
@@ -329,6 +333,9 @@ def load_model_from_asyncapi(
         if not props:
             print(f"Warning: No properties found in schema '{schema_name}' in '{spec_path}'", file=sys.stderr)
             return None
+
+        # Remove duplicates while preserving order
+        props = list(dict.fromkeys(props))
 
         return {
             'name': schema_name,
