@@ -1705,7 +1705,9 @@ class GenerateMermaidDiagramUseCase:
                     s_id = parsed_data.field_node_ids[src]
                 else:
                     # リテラル値
-                    s_id, literal_counter = self._ensure_literal(lines, src, literal_counter)
+                    literal_counter += 1
+                    s_id, literal_line = self._create_literal_node(src, literal_counter)
+                    lines.append(literal_line)
 
                 # エッジ追加
                 label = entry.transform if i == 0 and entry.transform else ""
@@ -1727,21 +1729,19 @@ class GenerateMermaidDiagramUseCase:
         lines.append("```")
         return "\n".join(lines)
 
-    def _ensure_literal(self, lines: List[str], label: str, counter: int) -> Tuple[str, int]:
-        """リテラルノードを作成（ステートレス）
+    def _create_literal_node(self, label: str, counter: int) -> Tuple[str, str]:
+        """リテラルノードのMermaid行を生成して返す（純粋関数）
 
         Args:
-            lines: Mermaid行のリスト
             label: リテラル値
             counter: 現在のカウンター値
 
         Returns:
-            (ノードID, 更新されたカウンター) のタプル
+            (ノードID, Mermaid行) のタプル
         """
-        counter += 1
         nid = MermaidNode.sanitize_id(f"lit_{counter}")
-        lines.append(f'  {nid}["{label}"]:::literal')
-        return nid, counter
+        line = f'  {nid}["{label}"]:::literal'
+        return nid, line
 
 
 def main(
@@ -1764,20 +1764,40 @@ def main(
         asyncapi_spec: List of AsyncAPI specification files
         show_all_props: If True, show all properties; if False, show only used fields for CSV models
     """
-    # 1. YAMLロード
+    # ==================================
+    # Composition Root: 依存性の組み立て
+    # ==================================
+
+    # 1. アダプター層のインスタンス化
     yaml_adapter = YAMLAdapter()
+    csv_adapter = CSVAdapter()
+    openapi_adapter = OpenAPIAdapter()
+    asyncapi_adapter = AsyncAPIAdapter()
+
+    # 2. リポジトリ層のインスタンス化と依存性の注入
+    repository = ModelRepository(
+        csv_adapter=csv_adapter,
+        openapi_adapter=openapi_adapter,
+        asyncapi_adapter=asyncapi_adapter
+    )
+
+    # 3. UseCase層のインスタンス化
+    extract_usecase = ExtractReferencedModelsUseCase()
+    dynamic_usecase = GenerateDynamicFieldsUseCase()
+    parse_usecase = ParseModelsUseCase()
+    generate_diagram_usecase = GenerateMermaidDiagramUseCase()
+
+    # ==================================
+    # UseCase実行フロー
+    # ==================================
+
+    # 4. YAMLロード
     yaml_models, lineage = yaml_adapter.load_lineage_definition(input_yaml)
 
-    # 2. リネージ解析（参照モデル・インスタンス・フィールド抽出）
-    extract_usecase = ExtractReferencedModelsUseCase()
+    # 5. リネージ解析（参照モデル・インスタンス・フィールド抽出）
     referenced_models, model_instances, _ = extract_usecase.execute(lineage, yaml_models)
 
-    # 3. 外部モデル取得
-    repository = ModelRepository(
-        CSVAdapter(),
-        OpenAPIAdapter(),
-        AsyncAPIAdapter()
-    )
+    # 6. 外部モデル取得
     missing_models = referenced_models.difference(ReferencedModels(yaml_models.get_names()))
     external_models, csv_model_names = repository.find_models(
         missing_models,
@@ -1787,21 +1807,19 @@ def main(
         asyncapi_specs or []
     )
 
-    # 4. モデル統合（Immutable化: Models.merge()使用）
+    # 7. モデル統合（Immutable化: Models.merge()使用）
     all_models = Models.merge([yaml_models, external_models])
 
-    # 5. 動的フィールド生成（Immutable化: 新しいModelsを受け取る）
-    dynamic_usecase = GenerateDynamicFieldsUseCase()
+    # 8. 動的フィールド生成（Immutable化: 新しいModelsを受け取る）
     all_models = dynamic_usecase.execute(lineage, all_models)
 
-    # 6. 使用フィールド抽出（フィルタリング用）
+    # 9. 使用フィールド抽出（フィルタリング用）
     used_fields = None
     if not show_all_props and csv_model_names:
         # 動的フィールド生成後に再度抽出
         _, _, used_fields = extract_usecase.execute(lineage, all_models)
 
-    # 7. モデルパース
-    parse_usecase = ParseModelsUseCase()
+    # 10. モデルパース
     parsed_data = parse_usecase.execute(
         all_models,
         used_fields,
@@ -1809,11 +1827,10 @@ def main(
         model_instances
     )
 
-    # 8. Mermaid図生成
-    generate_diagram_usecase = GenerateMermaidDiagramUseCase()
+    # 11. Mermaid図生成
     diagram = generate_diagram_usecase.execute(parsed_data, lineage)
 
-    # 9. ファイル出力
+    # 12. ファイル出力
     Path(output_md).write_text(diagram, encoding='utf-8')
 
 if __name__ == "__main__":
