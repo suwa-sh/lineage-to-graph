@@ -10,8 +10,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 必須環境
 - Python 3.8+
+- Rye（推奨）
 
 ### 依存関係のインストール
+
+**Rye使用時（推奨）:**
+```bash
+# 依存関係のインストール
+rye sync
+```
+
+**pipを直接使用する場合:**
 ```bash
 pip install -r requirements.txt
 ```
@@ -623,16 +632,49 @@ md-mermaid-lint data/output/*.md
 - ノードID、エッジの正しさ
 - サブグラフの適切なネスト
 
-#### 2. リグレッションテスト
+#### 2. Unit Test
+
+Domainレイヤーのロジックが正しく動作することを確認します。
+
+```bash
+# すべてのunit testを実行
+rye run pytest tests/
+
+# カバレッジ付きで実行
+rye run pytest --cov=lineage_to_md --cov-report=html tests/
+
+# HTMLカバレッジレポート表示
+open htmlcov/index.html
+```
+
+**テスト内容:**
+
+- Domainレイヤーの全8クラス（91テストケース）
+- Given/When/Then方式
+- テストメソッド名: `{対象メソッド名}_xxxの場合_yyyであること` 形式
+- 複合条件カバレッジを重視
+
+**テスト対象クラス:**
+
+- `ModelDefinition` - モデル定義のエンティティ
+- `LineageEntry` - リネージエントリのエンティティ
+- `FieldReference` - フィールド参照の値オブジェクト
+- `Models` - ModelDefinitionのコレクション
+- `LineageEntries` - LineageEntryのコレクション
+- `ReferencedModels` - 参照モデル名の集合
+- `ModelInstances` - モデルインスタンスのマップ
+- `UsedFields` - 使用フィールドのマップ
+
+#### 3. E2Eテスト（リグレッションテスト）
 
 既存機能が壊れていないことを確認します。
 
 ```bash
 # すべてのテストケースを実行
-bash test/lineage_to_md/test.sh
+bash tests_e2e/lineage_to_md/test.sh
 
 # 期待値の更新（意図的な変更の場合のみ）
-bash test/lineage_to_md/test.sh --update
+bash tests_e2e/lineage_to_md/test.sh --update
 ```
 
 **テスト内容:**
@@ -652,23 +694,26 @@ bash test/lineage_to_md/test.sh --update
 # 1. コード変更
 vim lineage_to_md.py
 
-# 2. 動作確認
+# 2. Unit test実行（Domainレイヤー変更時）
+rye run pytest tests/
+
+# 3. 動作確認
 python lineage_to_md.py data/sample.yml data/output/sample.md
 
-# 3. Mermaid構文チェック
+# 4. Mermaid構文チェック
 md-mermaid-lint data/output/sample.md
 
-# 4. リグレッションテスト
-bash test/lineage_to_md/test.sh
+# 5. E2Eテスト（リグレッションテスト）
+bash tests_e2e/lineage_to_md/test.sh
 
-# 5. すべてパスしたらコミット
+# 6. すべてパスしたらコミット
 git add .
 git commit -m "feat: ..."
 ```
 
-### テストケース一覧
+### E2Eテストケース一覧
 
-リグレッションテストで実行される8つのテストケース:
+E2Eテスト（リグレッションテスト）で実行される8つのテストケース:
 
 1. **sample** - 基本的なフィールドマッピング
 2. **event-driven** - 階層構造、複数ソース、多段階処理
@@ -679,4 +724,4 @@ git commit -m "feat: ..."
 7. **dynamic-fields** - props省略 + 動的生成
 8. **etl-pipeline** - 1:N マッピング、ETL多段階処理
 
-各テストケースの詳細は [test/lineage_to_md/test.sh](test/lineage_to_md/test.sh) を参照してください。
+各テストケースの詳細は [tests_e2e/lineage_to_md/test.sh](tests_e2e/lineage_to_md/test.sh) を参照してください。

@@ -222,7 +222,6 @@ class MermaidNode:
         return s
 
 
-# Backward compatibility wrapper
 # ファーストクラスコレクション
 
 @dataclass(frozen=True)
