@@ -116,6 +116,51 @@ class FieldReference:
 
 
 @dataclass(frozen=True)
+class ParseContext:
+    """parse_to_structured_dataの引数をまとめたコンテキスト"""
+    parent_prefix: str = ""
+    used_fields: Optional['UsedFields'] = None
+    csv_model_names: Set[str] = field(default_factory=set)
+    model_instances: Optional['ModelInstances'] = None
+    parent_instance: str = ""
+    parsed_data: Optional['ParsedModelsData'] = None
+
+
+@dataclass(frozen=True)
+class InstanceContext:
+    """_process_model_instanceの引数をまとめたコンテキスト"""
+    instance: Optional[str]
+    full_model_path: str
+    mtype: str
+    props: List[str]
+    parsed_data: 'ParsedModelsData'
+    should_filter: bool
+
+
+@dataclass(frozen=True)
+class FieldParseContext:
+    """_parse_fieldsの引数をまとめたコンテキスト"""
+    props: List[str]
+    full_model_path: str
+    instance: Optional[str]
+    instance_id_part: str
+    instance_path: str
+    parsed_data: 'ParsedModelsData'
+
+
+@dataclass(frozen=True)
+class Config:
+    """main関数の引数をまとめた設定"""
+    input_yaml: str
+    output_md: str
+    program_model_dirs: List[str] = field(default_factory=list)
+    datastore_model_dirs: List[str] = field(default_factory=list)
+    openapi_specs: List[str] = field(default_factory=list)
+    asyncapi_specs: List[str] = field(default_factory=list)
+    show_all_props: bool = False
+
+
+@dataclass(frozen=True)
 class MermaidNode:
     """Mermaidノードの値オブジェクト"""
     node_id: str
@@ -206,30 +251,32 @@ class Models:
 
     def parse_to_structured_data(
         self,
-        parent_prefix: str = "",
-        used_fields: Optional['UsedFields'] = None,
-        csv_model_names: Set[str] = set(),
-        model_instances: Optional['ModelInstances'] = None,
-        parent_instance: str = "",
-        parsed_data: Optional['ParsedModelsData'] = None
+        context: Optional[ParseContext] = None
     ) -> 'ParsedModelsData':
         """Recursively parse models and their children to build model hierarchy.
 
         Note: This method delegates to ModelParser domain service.
 
         Args:
-            parent_prefix: Parent model path (for nested models)
-            used_fields: 使用されているフィールド（フィルタリング用）
-            csv_model_names: Set of model names loaded from CSV (only these will be filtered)
-            model_instances: モデルインスタンスの情報
-            parent_instance: Instance identifier from parent model
-            parsed_data: 既存のParsedModelsData（再帰呼び出し用）
+            context: ParseContext containing parsing parameters
 
         Returns:
             ParsedModelsData
         """
-        parser = ModelParser(self, used_fields, csv_model_names, model_instances)
-        return parser.parse(parent_prefix, parent_instance, parsed_data)
+        if context is None:
+            context = ParseContext()
+
+        parser = ModelParser(
+            self,
+            context.used_fields,
+            context.csv_model_names,
+            context.model_instances
+        )
+        return parser.parse(
+            context.parent_prefix,
+            context.parent_instance,
+            context.parsed_data
+        )
 
 
 # ドメインサービス
@@ -605,10 +652,19 @@ class ModelParser:
 
         # Process each instance
         for instance in sorted_instances:
-            self._process_model_instance(
-                instance, full_model_path, mtype, props, children,
-                parent_prefix, parsed_data
+            should_filter = self._should_filter_fields(
+                f"{full_model_path}#{instance}" if instance else full_model_path,
+                full_model_path
             )
+            context = InstanceContext(
+                instance=instance,
+                full_model_path=full_model_path,
+                mtype=mtype,
+                props=props,
+                parsed_data=parsed_data,
+                should_filter=should_filter
+            )
+            self._process_model_instance(context, children, parent_prefix)
 
         # Recursively parse children
         if children:
@@ -622,51 +678,47 @@ class ModelParser:
 
     def _process_model_instance(
         self,
-        instance: Optional[str],
-        full_model_path: str,
-        mtype: str,
-        props: List[str],
+        context: InstanceContext,
         children: List[ModelDefinition],
-        parent_prefix: str,
-        parsed_data: 'ParsedModelsData'
+        parent_prefix: str
     ) -> None:
         """モデルインスタンスを処理
 
         Args:
-            instance: インスタンス識別子（Noneの場合はデフォルト）
-            full_model_path: モデルの完全パス
-            mtype: モデルタイプ
-            props: プロパティリスト
+            context: InstanceContext containing instance processing parameters
             children: 子モデルのリスト
             parent_prefix: 親モデルのパス
-            parsed_data: 蓄積先のParsedModelsData
         """
         # Build instance-specific paths
-        if instance:
-            instance_path = f"{full_model_path}#{instance}"
-            instance_id_part = f"_{instance}"
+        if context.instance:
+            instance_path = f"{context.full_model_path}#{context.instance}"
+            instance_id_part = f"_{context.instance}"
         else:
-            instance_path = full_model_path
+            instance_path = context.full_model_path
             instance_id_part = ""
 
         # Store model type
-        parsed_data.model_types[instance_path] = mtype
+        context.parsed_data.model_types[instance_path] = context.mtype
 
         # Store hierarchy info
-        parsed_data.model_hierarchy[instance_path] = {
+        context.parsed_data.model_hierarchy[instance_path] = {
             'parent': parent_prefix if parent_prefix else None,
-            'children': [f"{full_model_path}.{c.name}" for c in children] if children else [],
-            'instance': instance
+            'children': [f"{context.full_model_path}.{c.name}" for c in children] if children else [],
+            'instance': context.instance
         }
 
         # Parse fields
-        should_filter = self._should_filter_fields(instance_path, full_model_path)
-        nodes = self._parse_fields(
-            props, full_model_path, instance, instance_id_part,
-            should_filter, parsed_data
+        field_context = FieldParseContext(
+            props=context.props,
+            full_model_path=context.full_model_path,
+            instance=context.instance,
+            instance_id_part=instance_id_part,
+            instance_path=instance_path,
+            parsed_data=context.parsed_data
         )
+        nodes = self._parse_fields(field_context, context.should_filter)
 
-        parsed_data.field_nodes_by_model[instance_path] = nodes
+        context.parsed_data.field_nodes_by_model[instance_path] = nodes
 
     def _should_filter_fields(
         self,
@@ -695,51 +747,37 @@ class ModelParser:
 
     def _parse_fields(
         self,
-        props: List[str],
-        full_model_path: str,
-        instance: Optional[str],
-        instance_id_part: str,
-        should_filter: bool,
-        parsed_data: 'ParsedModelsData'
+        context: FieldParseContext,
+        should_filter: bool
     ) -> List[Tuple[str, str]]:
         """フィールドを解析してノードリストを生成
 
         Args:
-            props: プロパティリスト
-            full_model_path: モデルの完全パス
-            instance: インスタンス識別子
-            instance_id_part: インスタンスID部分（ノードID生成用）
+            context: FieldParseContext containing field parsing parameters
             should_filter: フィルタリングすべきかどうか
-            parsed_data: field_node_idsを更新するためのParsedModelsData
 
         Returns:
             (node_id, field_name) のタプルリスト
         """
         nodes = []
 
-        # Build instance path for field reference
-        if instance:
-            instance_path = f"{full_model_path}#{instance}"
-        else:
-            instance_path = full_model_path
-
-        for p in props:
+        for p in context.props:
             # Apply filtering if applicable
-            if should_filter and not self._is_field_used(instance_path, p):
+            if should_filter and not self._is_field_used(context.instance_path, p):
                 continue
 
             # Generate node ID
             nid = MermaidNode.sanitize_id(
-                f"{full_model_path}{instance_id_part}_{p}".replace(".", "_")
+                f"{context.full_model_path}{context.instance_id_part}_{p}".replace(".", "_")
             )
             nodes.append((nid, str(p)))
 
             # Map field reference to node ID
-            if instance:
-                field_ref = f"{full_model_path}#{instance}.{p}"
+            if context.instance:
+                field_ref = f"{context.full_model_path}#{context.instance}.{p}"
             else:
-                field_ref = f"{full_model_path}.{p}"
-            parsed_data.field_node_ids[field_ref] = nid
+                field_ref = f"{context.full_model_path}.{p}"
+            context.parsed_data.field_node_ids[field_ref] = nid
 
         return nodes
 
@@ -1602,37 +1640,13 @@ class ExtractReferencedModelsUseCase:
         instances_dict: Dict[str, Set[str]] = {}
 
         for entry in lineage:
-            # from側
+            # from側の参照を処理
             for ref in entry.from_refs:
-                field_ref = FieldReference(ref)
-                if not field_ref.model:
-                    continue
+                self._process_reference(ref, model_names, instances_dict)
 
-                model_names.add(field_ref.model)
-
-                # インスタンス辞書を初期化（setdefaultで簡潔に）
-                instances_set = instances_dict.setdefault(field_ref.model, set())
-
-                # インスタンスがあれば追加
-                if field_ref.instance:
-                    instances_set.add(field_ref.instance)
-
-            # to側
-            if not entry.to_ref:
-                continue
-
-            field_ref = FieldReference(entry.to_ref)
-            if not field_ref.model:
-                continue
-
-            model_names.add(field_ref.model)
-
-            # インスタンス辞書を初期化（setdefaultで簡潔に）
-            instances_set = instances_dict.setdefault(field_ref.model, set())
-
-            # インスタンスがあれば追加
-            if field_ref.instance:
-                instances_set.add(field_ref.instance)
+            # to側の参照を処理
+            if entry.to_ref:
+                self._process_reference(entry.to_ref, model_names, instances_dict)
 
         # 使用フィールドを抽出（ドメインメソッドを使用）
         used_fields = lineage.extract_referenced_fields(yaml_models)
@@ -1643,6 +1657,32 @@ class ExtractReferencedModelsUseCase:
             ModelInstances(instances_dict),
             used_fields
         )
+
+    @staticmethod
+    def _process_reference(
+        ref: str,
+        model_names: Set[str],
+        instances_dict: Dict[str, Set[str]]
+    ) -> None:
+        """参照文字列を処理してモデル名とインスタンスを抽出
+
+        Args:
+            ref: 参照文字列
+            model_names: モデル名の集合（更新される）
+            instances_dict: インスタンス辞書（更新される）
+        """
+        field_ref = FieldReference(ref)
+        if not field_ref.model:
+            return
+
+        model_names.add(field_ref.model)
+
+        # インスタンス辞書を初期化（setdefaultで簡潔に）
+        instances_set = instances_dict.setdefault(field_ref.model, set())
+
+        # インスタンスがあれば追加
+        if field_ref.instance:
+            instances_set.add(field_ref.instance)
 
 
 class GenerateDynamicFieldsUseCase:
@@ -1684,11 +1724,12 @@ class ParseModelsUseCase:
             ParsedModelsData
         """
         # Models.parse_to_structured_data() メソッドを使用
-        return models.parse_to_structured_data(
+        context = ParseContext(
             used_fields=used_fields,
             csv_model_names=csv_model_names,
             model_instances=model_instances
         )
+        return models.parse_to_structured_data(context)
 
 
 class GenerateMermaidDiagramUseCase:
@@ -1858,26 +1899,20 @@ class GenerateMermaidDiagramUseCase:
         return nid, line
 
 
-def main(
-    input_yaml: str,
-    output_md: str,
-    program_model_dirs: Optional[List[str]] = None,
-    datastore_model_dirs: Optional[List[str]] = None,
-    openapi_specs: Optional[List[str]] = None,
-    asyncapi_specs: Optional[List[str]] = None,
-    show_all_props: bool = False
-) -> None:
+def main(config: Config) -> None:
     """Convert YAML lineage definition to Mermaid Markdown diagram.
 
     Args:
-        input_yaml: Path to input YAML file
-        output_md: Path to output Markdown file
-        program_model_dir: List of directories containing program model CSVs
-        datastore_model_dir: List of directories containing datastore model CSVs
-        openapi_spec: List of OpenAPI specification files
-        asyncapi_spec: List of AsyncAPI specification files
-        show_all_props: If True, show all properties; if False, show only used fields for CSV models
+        config: Configuration object containing all parameters
     """
+    # Extract parameters from config
+    input_yaml = config.input_yaml
+    output_md = config.output_md
+    program_model_dirs = config.program_model_dirs
+    datastore_model_dirs = config.datastore_model_dirs
+    openapi_specs = config.openapi_specs
+    asyncapi_specs = config.asyncapi_specs
+    show_all_props = config.show_all_props
     # ==================================
     # Composition Root: 依存性の組み立て
     # ==================================
@@ -2013,12 +2048,14 @@ Examples:
 
     args = parser.parse_args()
 
-    main(
-        args.input_yaml,
-        args.output_md,
+    config = Config(
+        input_yaml=args.input_yaml,
+        output_md=args.output_md,
         program_model_dirs=args.program_model_dir or [],
         datastore_model_dirs=args.datastore_model_dir or [],
         openapi_specs=args.openapi_spec or [],
         asyncapi_specs=args.asyncapi_spec or [],
         show_all_props=args.show_all_props
     )
+
+    main(config)

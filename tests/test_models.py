@@ -328,9 +328,9 @@ class TestModels:
         model_instances = ModelInstances({"Money": {"jpy", "usd"}})
 
         # When: parse_to_structured_dataを呼ぶ
-        result = models.parse_to_structured_data(
-            model_instances=model_instances
-        )
+        from lineage_to_md import ParseContext
+        context = ParseContext(model_instances=model_instances)
+        result = models.parse_to_structured_data(context)
 
         # Then: インスタンスごとに解析される
         assert "Money#jpy" in result.model_types
@@ -343,9 +343,9 @@ class TestModels:
         ])
 
         # When: parent_prefixを指定してparse_to_structured_dataを呼ぶ
-        result = models.parse_to_structured_data(
-            parent_prefix="Parent"
-        )
+        from lineage_to_md import ParseContext
+        context = ParseContext(parent_prefix="Parent")
+        result = models.parse_to_structured_data(context)
 
         # Then: プレフィックスが適用される
         assert "Parent.Child" in result.model_types
@@ -359,10 +359,12 @@ class TestModels:
         csv_model_names = {"CSVModel"}
 
         # When: parse_to_structured_dataを呼ぶ
-        result = models.parse_to_structured_data(
+        from lineage_to_md import ParseContext
+        context = ParseContext(
             used_fields=used_fields,
             csv_model_names=csv_model_names
         )
+        result = models.parse_to_structured_data(context)
 
         # Then: 使用フィールドのみが含まれる
         nodes = result.field_nodes_by_model.get("CSVModel", [])
@@ -385,9 +387,9 @@ class TestModels:
         )
 
         # When: parsed_dataを指定してparse_to_structured_dataを呼ぶ
-        result = models.parse_to_structured_data(
-            parsed_data=existing_data
-        )
+        from lineage_to_md import ParseContext
+        context = ParseContext(parsed_data=existing_data)
+        result = models.parse_to_structured_data(context)
 
         # Then: 既存データに追加される
         assert "Model1" in result.model_types  # 既存
