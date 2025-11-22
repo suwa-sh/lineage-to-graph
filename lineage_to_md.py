@@ -268,6 +268,70 @@ class UsedFields:
         return self._fields
 
 
+# ============================================================================
+# Utility Layer - Conversion Helpers
+# ============================================================================
+
+def model_to_dict(m: ModelDefinition) -> Dict[str, Any]:
+    """ModelDefinitionを辞書に変換（再帰的）
+
+    Args:
+        m: 変換するModelDefinition
+
+    Returns:
+        辞書形式のモデル定義
+    """
+    result = {
+        'name': m.name,
+        'type': m.type,
+        'props': m.props
+    }
+    if m.children:
+        result['children'] = [model_to_dict(c) for c in m.children]
+    return result
+
+
+def lineage_to_dict(entry: LineageEntry) -> Dict[str, Any]:
+    """LineageEntryを辞書に変換
+
+    Args:
+        entry: 変換するLineageEntry
+
+    Returns:
+        辞書形式のリネージエントリ
+    """
+    result = {
+        'from': entry.from_refs,
+        'to': entry.to_ref
+    }
+    if entry.transform:
+        result['transform'] = entry.transform
+    return result
+
+
+def dict_to_model(data: Dict[str, Any]) -> ModelDefinition:
+    """辞書からModelDefinitionを生成（再帰的）
+
+    Args:
+        data: 辞書形式のモデル定義
+
+    Returns:
+        ModelDefinitionオブジェクト
+    """
+    children_data = data.get('children', [])
+    children = [dict_to_model(c) for c in children_data]
+    return ModelDefinition(
+        name=data['name'],
+        type=data.get('type', 'datastore'),
+        props=data.get('props', []),
+        children=children
+    )
+
+
+# ============================================================================
+# Legacy Functions (to be refactored in Phase 2)
+# ============================================================================
+
 def load_model_from_csv(csv_path: str, model_type: str) -> Optional[Dict[str, Any]]:
     """Load model definition from CSV file.
 
@@ -744,89 +808,7 @@ def parse_reference(ref: str) -> Tuple[str, Optional[str], Optional[str]]:
             # Just model name
             return (ref, None, None)
 
-def extract_referenced_models(lineage: List[Dict[str, Any]]) -> Set[str]:
-    """Extract all model names referenced in lineage definitions.
-
-    Strips instance identifiers to get the base model names for CSV loading.
-
-    Args:
-        lineage: List of lineage entries with 'from' and 'to' fields
-
-    Returns:
-        Set of model names (top-level only, e.g., 'Parent' from 'Parent.Child.field')
-    """
-    models = set()
-
-    for entry in lineage:
-        # Extract from 'from' field (can be string or list)
-        from_val = entry.get('from')
-        if isinstance(from_val, str):
-            from_list = [from_val]
-        elif isinstance(from_val, list):
-            from_list = from_val
-        else:
-            from_list = []
-
-        for ref in from_list:
-            model, instance, field = parse_reference(ref)
-            if model:
-                models.add(model)
-
-        # Extract from 'to' field
-        to_val = entry.get('to', '')
-        if to_val:
-            model, instance, field = parse_reference(to_val)
-            if model:
-                models.add(model)
-
-    return models
-
-def extract_model_instances(lineage: List[Dict[str, Any]]) -> Dict[str, Set[str]]:
-    """Extract all model instances referenced in lineage definitions.
-
-    Args:
-        lineage: List of lineage entries with 'from' and 'to' fields
-
-    Returns:
-        Dict mapping model names to sets of instance identifiers
-        Example: {'Money': {'jpy', 'usd'}, 'Transaction': set()}
-        Empty set means model is used without instance identifiers
-    """
-    from collections import defaultdict
-    instances: Dict[str, Set[str]] = defaultdict(set)
-
-    for entry in lineage:
-        # Process 'from' field (can be string or list)
-        from_val = entry.get('from')
-        if isinstance(from_val, str):
-            from_list = [from_val]
-        elif isinstance(from_val, list):
-            from_list = from_val
-        else:
-            from_list = []
-
-        for ref in from_list:
-            model, instance, field = parse_reference(ref)
-            if model and instance:
-                instances[model].add(instance)
-            elif model and not instance:
-                # Model without instance - mark with empty set
-                if model not in instances:
-                    instances[model] = set()
-
-        # Process 'to' field
-        to_val = entry.get('to', '')
-        if to_val:
-            model, instance, field = parse_reference(to_val)
-            if model and instance:
-                instances[model].add(instance)
-            elif model and not instance:
-                if model not in instances:
-                    instances[model] = set()
-
-    return dict(instances)
-
-def extract_referenced_fields(lineage: List[Dict[str, Any]], yaml_models: List[Dict[str, Any]]) -> Dict[str, Set[str]]:
+def extract_referenced_fields(lineage: LineageEntries, yaml_models: Models) -> UsedFields:
     """Extract all fields referenced in lineage definitions.
 
     This function analyzes lineage entries to determine which fields are actually used.
@@ -840,39 +822,38 @@ def extract_referenced_fields(lineage: List[Dict[str, Any]], yaml_models: List[D
     - 'Money#usd': {'amount'}
 
     Args:
-        lineage: List of lineage entries with 'from' and 'to' fields
-        yaml_models: List of model definitions from YAML (to identify model-level references)
+        lineage: LineageEntries コレクション
+        yaml_models: Models コレクション (to identify model-level references)
 
     Returns:
-        Dict mapping model paths (with optional instance) to sets of field names
+        UsedFields オブジェクト
         Example: {
             'HttpRequest': {'amount', 'user_id'},
             'Money#jpy': {'amount', 'currency'},
             'Money#usd': {'amount'}
         }
     """
-    used_fields: Dict[str, Set[str]] = {}
+    used_fields = UsedFields()
 
     # Build a set of all defined model names (including nested ones) from YAML
     # to distinguish model references from field references
-    def collect_model_names(models: List[Dict[str, Any]], prefix: str = "") -> Set[str]:
+    def collect_model_names(models: List[ModelDefinition], prefix: str = "") -> Set[str]:
         """Recursively collect all model names including nested ones."""
         names = set()
         for m in models:
-            model_path = f"{prefix}.{m['name']}" if prefix else m['name']
+            model_path = f"{prefix}.{m.name}" if prefix else m.name
             names.add(model_path)
-            if 'children' in m:
-                names.update(collect_model_names(m['children'], model_path))
+            if m.children:
+                names.update(collect_model_names(m.children, model_path))
         return names
 
-    known_models = collect_model_names(yaml_models)
+    known_models = collect_model_names(yaml_models.to_list())
 
-    def add_field(ref: str, is_from: bool = True) -> None:
+    def add_field(ref: str) -> None:
         """Add a field reference to the used_fields dictionary.
 
         Args:
             ref: Reference string (can be 'Model', 'Model#instance', 'Model.field', 'Model#instance.field')
-            is_from: True if this is a 'from' reference, False if 'to'
         """
         model, instance, field = parse_reference(ref)
 
@@ -885,51 +866,33 @@ def extract_referenced_fields(lineage: List[Dict[str, Any]], yaml_models: List[D
         # Check if it's a model-level reference (no field specified)
         if field is None:
             # Model-level reference: mark all fields in this model/instance as used
-            if tracking_key not in used_fields:
-                used_fields[tracking_key] = set(['*'])  # '*' means all fields
-            else:
-                used_fields[tracking_key].add('*')
+            used_fields.mark_all_fields(tracking_key)
             return
 
-        # It's a field reference
-        if tracking_key not in used_fields:
-            used_fields[tracking_key] = set()
-
-        # Don't add field if we already marked all fields with '*'
-        if '*' not in used_fields[tracking_key]:
-            used_fields[tracking_key].add(field)
+        # It's a field reference - add to UsedFields
+        used_fields.add_field(tracking_key, field)
 
     # Process all lineage entries
     for entry in lineage:
-        # Process 'from' field (can be string or list)
-        from_val = entry.get('from')
-        if isinstance(from_val, str):
-            from_list = [from_val]
-        elif isinstance(from_val, list):
-            from_list = from_val
-        else:
-            from_list = []
-
-        for ref in from_list:
+        # Process 'from' field (already normalized as List[str] in LineageEntry)
+        for ref in entry.from_refs:
             model, instance, field = parse_reference(ref)
             # Skip literal values (no model or field, and not in known models)
             if model and (field is not None or model in known_models or instance is not None):
-                add_field(ref, is_from=True)
+                add_field(ref)
 
         # Process 'to' field
-        to_val = entry.get('to', '')
-        if to_val:
-            model, instance, field = parse_reference(to_val)
+        if entry.to_ref:
+            model, instance, field = parse_reference(entry.to_ref)
             if model and (field is not None or model in known_models or instance is not None):
-                add_field(to_val, is_from=False)
+                add_field(entry.to_ref)
 
     return used_fields
 
 def create_dynamic_models_from_lineage(
-    lineage: List[Dict[str, Any]],
-    existing_models: List[Dict[str, Any]],
-    model_types: Dict[str, str]
-) -> List[Dict[str, Any]]:
+    lineage: LineageEntries,
+    models: Models
+) -> None:
     """Create dynamic model definitions for models referenced in lineage but not defined in models.
 
     This function enables users to define models with only name and type,
@@ -950,13 +913,15 @@ def create_dynamic_models_from_lineage(
         Result: EmptyModel will have field1, and a child model Child with field2
 
     Args:
-        lineage: List of lineage entries
-        existing_models: List of existing model definitions from YAML
-        model_types: Dict of already registered model types (to detect defined models)
+        lineage: LineageEntries コレクション
+        models: Models コレクション（直接更新される）
 
     Returns:
-        List of new model definitions to be added (or updated existing models with props)
+        None (models を直接更新)
     """
+    # Convert to dict for processing, then convert back
+    # This is temporary - using the existing logic with dict
+    existing_models = [model_to_dict(m) for m in models]
     # Build a map of existing models for quick lookup
     existing_model_map: Dict[str, Dict[str, Any]] = {}
 
@@ -1045,32 +1010,20 @@ def create_dynamic_models_from_lineage(
 
     # Process all lineage entries
     for entry in lineage:
-        # Process 'from' field (can be string or list)
-        from_val = entry.get('from')
-        if isinstance(from_val, str):
-            from_list = [from_val]
-        elif isinstance(from_val, list):
-            from_list = from_val
-        else:
-            from_list = []
-
-        for ref in from_list:
+        # Process 'from' field (LineageEntry.from_refs is already a list)
+        for ref in entry.from_refs:
             extract_field_references(ref)
 
         # Process 'to' field
-        to_val = entry.get('to', '')
-        if to_val:
-            extract_field_references(to_val)
+        if entry.to_ref:
+            extract_field_references(entry.to_ref)
 
     # Now update existing models with dynamic fields and create missing child models
-    models_to_update = []
-
     for model_path, fields in dynamic_fields.items():
         # Navigate to the model definition and add props
         parts = model_path.split('.')
         current_models = existing_models
         model_def = None
-        parent_def = None
         parent_type = 'program'  # Default type
         missing_part_index = -1
 
@@ -1078,7 +1031,6 @@ def create_dynamic_models_from_lineage(
             found = False
             for m in current_models:
                 if m['name'] == part:
-                    parent_def = model_def  # Remember parent before moving to child
                     if model_def:
                         parent_type = model_def.get('type', parent_type)
                     model_def = m
@@ -1139,8 +1091,11 @@ def create_dynamic_models_from_lineage(
                     new_model['children'] = []
                     current_models = new_model['children']
 
-    # Return empty list as we modified existing_models in place
-    return []
+    # Convert modified dicts back to ModelDefinition objects
+    updated_models = [dict_to_model(m) for m in existing_models]
+
+    # Update the Models collection in place
+    models._models = updated_models
 
 
 # ============================================
@@ -1413,40 +1368,8 @@ class ExtractReferencedModelsUseCase:
                 elif field_ref.model:
                     model_instances.mark_model_without_instance(field_ref.model)
 
-        # 使用フィールドを抽出
-        used_fields = UsedFields()
-
-        # ModelDefinitionとLineageEntryを辞書に変換して既存の関数を利用
-        def model_to_dict(m: ModelDefinition) -> Dict[str, Any]:
-            """ModelDefinitionを辞書に変換（再帰的）"""
-            result = {
-                'name': m.name,
-                'type': m.type,
-                'props': m.props
-            }
-            if m.children:
-                result['children'] = [model_to_dict(c) for c in m.children]
-            return result
-
-        def lineage_to_dict(entry: LineageEntry) -> Dict[str, Any]:
-            """LineageEntryを辞書に変換"""
-            result = {
-                'from': entry.from_refs,
-                'to': entry.to_ref
-            }
-            if entry.transform:
-                result['transform'] = entry.transform
-            return result
-
-        yaml_models_dict = [model_to_dict(m) for m in yaml_models]
-        lineage_dict = [lineage_to_dict(e) for e in lineage]
-        used_fields_dict = extract_referenced_fields(lineage_dict, yaml_models_dict)
-        for model_path, fields in used_fields_dict.items():
-            for field_name in fields:
-                if field_name == '*':
-                    used_fields.mark_all_fields(model_path)
-                else:
-                    used_fields.add_field(model_path, field_name)
+        # 使用フィールドを抽出（ドメインオブジェクトを直接渡す）
+        used_fields = extract_referenced_fields(lineage, yaml_models)
 
         return referenced_models, model_instances, used_fields
 
@@ -1461,48 +1384,8 @@ class GenerateDynamicFieldsUseCase:
             lineage: リネージエントリのコレクション
             models: モデルのコレクション（更新される）
         """
-        # ModelDefinitionとLineageEntryを辞書に変換
-        def model_to_dict(m: ModelDefinition) -> Dict[str, Any]:
-            """ModelDefinitionを辞書に変換（再帰的）"""
-            result = {
-                'name': m.name,
-                'type': m.type,
-                'props': m.props
-            }
-            if m.children:
-                result['children'] = [model_to_dict(c) for c in m.children]
-            return result
-
-        def lineage_to_dict(entry: LineageEntry) -> Dict[str, Any]:
-            """LineageEntryを辞書に変換"""
-            result = {
-                'from': entry.from_refs,
-                'to': entry.to_ref
-            }
-            if entry.transform:
-                result['transform'] = entry.transform
-            return result
-
-        # 既存の関数を利用
-        model_types_dict = {}
-        def build_model_types(model_list: List[Dict[str, Any]], prefix: str = "") -> None:
-            for m in model_list:
-                model_path = f"{prefix}.{m['name']}" if prefix else m['name']
-                model_types_dict[model_path] = m.get('type', 'datastore')
-                if 'children' in m:
-                    build_model_types(m['children'], model_path)
-
-        models_dict = [model_to_dict(m) for m in models]
-        lineage_dict = [lineage_to_dict(e) for e in lineage]
-
-        build_model_types(models_dict)
-
-        # 動的フィールド生成（辞書形式で渡す）
-        create_dynamic_models_from_lineage(
-            lineage_dict,
-            models_dict,
-            model_types_dict
-        )
+        # 動的フィールド生成（ドメインオブジェクトを直接渡す）
+        create_dynamic_models_from_lineage(lineage, models)
 
 
 class ParseModelsUseCase:
@@ -1526,33 +1409,12 @@ class ParseModelsUseCase:
         Returns:
             ParsedModelsData
         """
-        # ModelDefinitionを辞書に変換
-        def model_to_dict(m: ModelDefinition) -> Dict[str, Any]:
-            """ModelDefinitionを辞書に変換（再帰的）"""
-            result = {
-                'name': m.name,
-                'type': m.type,
-                'props': m.props
-            }
-            if m.children:
-                result['children'] = [model_to_dict(c) for c in m.children]
-            return result
-
-        models_dict = [model_to_dict(m) for m in models]
-
-        # 既存の関数を利用
-        model_types, field_nodes_by_model, field_node_ids, model_hierarchy = parse_models_recursive(
-            models_dict,
-            used_fields=used_fields.to_dict() if used_fields else None,
+        # parse_models_recursive を直接呼び出し（ドメインオブジェクトを渡す）
+        return parse_models_recursive(
+            models,
+            used_fields=used_fields,
             csv_model_names=csv_model_names,
-            model_instances=model_instances.to_dict()
-        )
-
-        return ParsedModelsData(
-            model_types=model_types,
-            field_nodes_by_model=field_nodes_by_model,
-            field_node_ids=field_node_ids,
-            model_hierarchy=model_hierarchy
+            model_instances=model_instances
         )
 
 
@@ -1719,58 +1581,53 @@ def parse_field(ref: str) -> Tuple[str, str]:
     return model_path, field
 
 def parse_models_recursive(
-    models: List[Dict[str, Any]],
+    models: Models,
     parent_prefix: str = "",
-    model_types: Optional[Dict[str, str]] = None,
-    field_nodes_by_model: Optional[Dict[str, List[Tuple[str, str]]]] = None,
-    field_node_ids: Optional[Dict[str, str]] = None,
-    model_hierarchy: Optional[Dict[str, Dict[str, Any]]] = None,
-    used_fields: Optional[Dict[str, Set[str]]] = None,
-    csv_model_names: Optional[Set[str]] = None,
-    model_instances: Optional[Dict[str, Set[str]]] = None,
-    parent_instance: str = ""
-) -> Tuple[Dict[str, str], Dict[str, List[Tuple[str, str]]], Dict[str, str], Dict[str, Dict[str, Any]]]:
+    used_fields: Optional[UsedFields] = None,
+    csv_model_names: Set[str] = set(),
+    model_instances: Optional[ModelInstances] = None,
+    parent_instance: str = "",
+    parsed_data: Optional[ParsedModelsData] = None
+) -> ParsedModelsData:
     """Recursively parse models and their children to build model hierarchy.
 
     Supports model instances via '#' notation (e.g., 'Money#jpy', 'Money#usd').
 
     Args:
-        models: List of model definitions
+        models: Models コレクション
         parent_prefix: Parent model path (for nested models)
-        model_types: Dict mapping model paths (with instance) to their types
-        field_nodes_by_model: Dict mapping model paths (with instance) to field nodes
-        field_node_ids: Dict mapping field references (with instance) to node IDs
-        model_hierarchy: Dict storing parent-child relationships
-        used_fields: Dict mapping model paths (with instance) to sets of actually used field names
+        used_fields: 使用されているフィールド（フィルタリング用）
         csv_model_names: Set of model names loaded from CSV (only these will be filtered)
-        model_instances: Dict mapping model names to sets of instance identifiers
+        model_instances: モデルインスタンスの情報
         parent_instance: Instance identifier from parent model
+        parsed_data: 既存のParsedModelsData（再帰呼び出し用）
 
     Returns:
-        Tuple of (model_types, field_nodes_by_model, field_node_ids, model_hierarchy)
+        ParsedModelsData
     """
-    if model_types is None:
-        model_types = {}
-    if field_nodes_by_model is None:
-        field_nodes_by_model = {}
-    if field_node_ids is None:
-        field_node_ids = {}
-    if model_hierarchy is None:
-        model_hierarchy = {}
-    if model_instances is None:
-        model_instances = {}
+    if parsed_data is None:
+        parsed_data = ParsedModelsData(
+            model_types={},
+            field_nodes_by_model={},
+            field_node_ids={},
+            model_hierarchy={}
+        )
+
+    # Convert UsedFields to dict for easier access (if provided)
+    used_fields_dict = used_fields.to_dict() if used_fields else None
+    model_instances_dict = model_instances.to_dict() if model_instances else {}
 
     for m in models:
-        name = m["name"]
-        mtype = m.get("type", "datastore")
-        props = m.get("props", [])
-        children = m.get("children", [])
+        name = m.name
+        mtype = m.type
+        props = m.props
+        children = m.children
 
         # Build full model path (without instance)
         full_model_path = f"{parent_prefix}.{name}" if parent_prefix else name
 
         # Get instances for this model (empty set means no instances)
-        instances = model_instances.get(name, set())
+        instances = model_instances_dict.get(name, set())
 
         # If this model has no instances, treat it as a single default instance
         if not instances:
@@ -1789,21 +1646,21 @@ def parse_models_recursive(
                 instance_path = full_model_path
                 instance_id_part = ""
 
-            model_types[instance_path] = mtype
+            parsed_data.model_types[instance_path] = mtype
 
             # Store hierarchy info
-            model_hierarchy[instance_path] = {
+            parsed_data.model_hierarchy[instance_path] = {
                 'parent': parent_prefix if parent_prefix else None,
-                'children': [f"{full_model_path}.{c['name']}" for c in children] if children else [],
+                'children': [f"{full_model_path}.{c.name}" for c in children] if children else [],
                 'instance': instance
             }
 
             # Determine if we should filter fields for this model instance
             should_filter = (
-                used_fields is not None and
-                csv_model_names is not None and
+                used_fields_dict is not None and
+                csv_model_names and
                 name in csv_model_names and
-                instance_path in used_fields
+                instance_path in used_fields_dict
             )
 
             # Parse fields
@@ -1812,7 +1669,7 @@ def parse_models_recursive(
                 # Apply filtering if applicable
                 if should_filter:
                     # Check if this field is actually used
-                    model_used_fields = used_fields.get(instance_path, set())
+                    model_used_fields = used_fields_dict.get(instance_path, set())
                     # '*' means all fields, otherwise check if field is in the set
                     if '*' not in model_used_fields and p not in model_used_fields:
                         # Skip this field as it's not used in lineage
@@ -1827,19 +1684,18 @@ def parse_models_recursive(
                     field_ref = f"{full_model_path}#{instance}.{p}"
                 else:
                     field_ref = f"{full_model_path}.{p}"
-                field_node_ids[field_ref] = nid
+                parsed_data.field_node_ids[field_ref] = nid
 
-            field_nodes_by_model[instance_path] = nodes
+            parsed_data.field_nodes_by_model[instance_path] = nodes
 
         # Recursively parse children (children inherit parent's instance if any)
         if children:
             parse_models_recursive(
-                children, full_model_path, model_types, field_nodes_by_model,
-                field_node_ids, model_hierarchy, used_fields, csv_model_names,
-                model_instances, parent_instance
+                Models(children), full_model_path, used_fields, csv_model_names,
+                model_instances, parent_instance, parsed_data
             )
 
-    return model_types, field_nodes_by_model, field_node_ids, model_hierarchy
+    return parsed_data
 
 def generate_subgraph(
     model_path: str,
@@ -1901,10 +1757,10 @@ def generate_subgraph(
 def main(
     input_yaml: str,
     output_md: str,
-    program_model_dir: Optional[List[str]] = None,
-    datastore_model_dir: Optional[List[str]] = None,
-    openapi_spec: Optional[List[str]] = None,
-    asyncapi_spec: Optional[List[str]] = None,
+    program_model_dirs: Optional[List[str]] = None,
+    datastore_model_dirs: Optional[List[str]] = None,
+    openapi_specs: Optional[List[str]] = None,
+    asyncapi_specs: Optional[List[str]] = None,
     show_all_props: bool = False
 ) -> None:
     """Convert YAML lineage definition to Mermaid Markdown diagram.
@@ -1935,10 +1791,10 @@ def main(
     missing_models = referenced_models.difference(ReferencedModels(yaml_models.get_names()))
     external_models, csv_model_names = repository.find_models(
         missing_models,
-        program_model_dir or [],
-        datastore_model_dir or [],
-        openapi_spec or [],
-        asyncapi_spec or []
+        program_model_dirs or [],
+        datastore_model_dirs or [],
+        openapi_specs or [],
+        asyncapi_specs or []
     )
 
     # 4. モデル統合
@@ -1946,46 +1802,8 @@ def main(
     all_models.extend(external_models.to_list())
 
     # 5. 動的フィールド生成
-    # NOTE: 既存の関数を直接使用（オブジェクトの参照更新のため）
-    model_types_dict = {}
-    def build_model_types_temp(model_list: List[ModelDefinition], prefix: str = "") -> None:
-        for m in model_list:
-            model_path = f"{prefix}.{m.name}" if prefix else m.name
-            model_types_dict[model_path] = m.type
-            if m.children:
-                build_model_types_temp(m.children, model_path)
-
-    build_model_types_temp(all_models.to_list())
-
-    # 辞書形式に変換して既存関数を呼び出す
-    def model_to_dict_temp(m: ModelDefinition) -> Dict[str, Any]:
-        result = {'name': m.name, 'type': m.type, 'props': m.props}
-        if m.children:
-            result['children'] = [model_to_dict_temp(c) for c in m.children]
-        return result
-
-    def lineage_to_dict_temp(entry: LineageEntry) -> Dict[str, Any]:
-        result = {'from': entry.from_refs, 'to': entry.to_ref}
-        if entry.transform:
-            result['transform'] = entry.transform
-        return result
-
-    models_dict_temp = [model_to_dict_temp(m) for m in all_models]
-    lineage_dict_temp = [lineage_to_dict_temp(e) for e in lineage]
-    create_dynamic_models_from_lineage(lineage_dict_temp, models_dict_temp, model_types_dict)
-
-    # 辞書の変更をModelDefinitionオブジェクトに反映
-    def dict_to_model(data: Dict[str, Any]) -> ModelDefinition:
-        children_data = data.get('children', [])
-        children = [dict_to_model(c) for c in children_data]
-        return ModelDefinition(
-            name=data['name'],
-            type=data.get('type', 'datastore'),
-            props=data.get('props', []),
-            children=children
-        )
-
-    all_models = Models([dict_to_model(m) for m in models_dict_temp])
+    dynamic_usecase = GenerateDynamicFieldsUseCase()
+    dynamic_usecase.execute(lineage, all_models)
 
     # 6. 使用フィールド抽出（フィルタリング用）
     used_fields = None
@@ -2078,9 +1896,9 @@ Examples:
     main(
         args.input_yaml,
         args.output_md,
-        program_model_dir=args.program_model_dir or [],
-        datastore_model_dir=args.datastore_model_dir or [],
-        openapi_spec=args.openapi_spec or [],
-        asyncapi_spec=args.asyncapi_spec or [],
+        program_model_dirs=args.program_model_dir or [],
+        datastore_model_dirs=args.datastore_model_dir or [],
+        openapi_specs=args.openapi_spec or [],
+        asyncapi_specs=args.asyncapi_spec or [],
         show_all_props=args.show_all_props
     )
