@@ -6,7 +6,10 @@
       "Read(//tmp/**)",
       "Bash(jsonschema:*)",
       "Bash(python3:*)",
-      "Bash(python debug_dynamic.py:*)"
+      "Bash(python debug_dynamic.py:*)",
+      "Bash(chmod:*)",
+      "Bash(./test.sh)",
+      "Bash(bash test/lineage_to_md/test.sh:*)"
     ],
     "deny": [],
     "ask": []

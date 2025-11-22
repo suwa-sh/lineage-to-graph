@@ -591,10 +591,92 @@ lineage:
 
 - `slug()`関数を使用してMermaid識別子を生成し、構文エラーを防ぐ
 - `field_node_ids`辞書を使用して既存フィールド参照を解決
-- リテラル値は`ensure_literal()`で重複を避けながら動的生成
+- リテラル値は`ensure_literal()`でlineage定義ごとに一意のノードとして動的生成（各リネージの独立性を保つため）
 - 新しいモデルタイプを追加する場合はCSSクラス定義も追加 ([lineage_to_md.py:41-43](lineage_to_md.py#L41-L43))
 
 ### スキーマ拡張時
 
 - [schema.json](schema.json) の`enum`値を更新(例: 新しい`type`)
 - `examples`セクションに使用例を追加して検証可能にする
+
+## 開発ルール
+
+### コード変更時の必須チェック
+
+コードを変更した際は、以下のチェックを必ず実行してください:
+
+#### 1. Mermaid構文チェック (md-mermaid-lint)
+
+生成されたMarkdownファイルがMermaid構文として正しいかを確認します。
+
+```bash
+# 個別ファイルのチェック
+md-mermaid-lint data/output/output.md
+
+# サンプル全体のチェック
+md-mermaid-lint data/output/*.md
+```
+
+**チェック内容:**
+
+- Mermaid構文の妥当性
+- ノードID、エッジの正しさ
+- サブグラフの適切なネスト
+
+#### 2. リグレッションテスト
+
+既存機能が壊れていないことを確認します。
+
+```bash
+# すべてのテストケースを実行
+bash test/lineage_to_md/test.sh
+
+# 期待値の更新（意図的な変更の場合のみ）
+bash test/lineage_to_md/test.sh --update
+```
+
+**テスト内容:**
+
+- README.md「個別生成」セクションの全コマンド（8テストケース）
+- 期待される出力との完全一致を確認
+
+**テスト失敗時の対応:**
+
+1. 差分を確認し、意図した変更かどうかを判断
+2. 意図した変更の場合: `--update` フラグで期待値を更新
+3. 意図しない変更の場合: コードを修正して再テスト
+
+### 開発フロー
+
+```bash
+# 1. コード変更
+vim lineage_to_md.py
+
+# 2. 動作確認
+python lineage_to_md.py data/sample.yml data/output/sample.md
+
+# 3. Mermaid構文チェック
+md-mermaid-lint data/output/sample.md
+
+# 4. リグレッションテスト
+bash test/lineage_to_md/test.sh
+
+# 5. すべてパスしたらコミット
+git add .
+git commit -m "feat: ..."
+```
+
+### テストケース一覧
+
+リグレッションテストで実行される8つのテストケース:
+
+1. **sample** - 基本的なフィールドマッピング
+2. **event-driven** - 階層構造、複数ソース、多段階処理
+3. **event-driven-csv** - CSV読み込み、モデル→フィールド参照
+4. **instance_example** - モデルインスタンス（YAML）
+5. **instance_csv_example** - モデルインスタンス（CSV）
+6. **api_example** - OpenAPI + AsyncAPI
+7. **dynamic-fields** - props省略 + 動的生成
+8. **etl-pipeline** - 1:N マッピング、ETL多段階処理
+
+各テストケースの詳細は [test/lineage_to_md/test.sh](test/lineage_to_md/test.sh) を参照してください。
