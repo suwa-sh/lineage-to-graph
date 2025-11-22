@@ -75,21 +75,20 @@ class FieldReference:
             # Split on '#' first
             model_part, rest = ref.split('#', 1)
 
-            # Check if there's a field after the instance
-            if '.' in rest:
-                instance, field = rest.split('.', 1)
-                return (model_part, instance, field)
-            else:
-                # Just model#instance, no field
+            # Just model#instance, no field
+            if '.' not in rest:
                 return (model_part, rest, None)
-        else:
-            # No instance identifier
-            if '.' in ref:
-                model, field = ref.split('.', 1)
-                return (model, None, field)
-            else:
-                # Just model name
-                return (ref, None, None)
+
+            instance, field = rest.split('.', 1)
+            return (model_part, instance, field)
+
+        # No instance identifier
+        # Just model name
+        if '.' not in ref:
+            return (ref, None, None)
+
+        model, field = ref.split('.', 1)
+        return (model, None, field)
 
     @staticmethod
     def parse_field(ref: str) -> Tuple[str, str]:
@@ -355,12 +354,12 @@ class DynamicFieldGenerator:
         if '#' in ref:
             ref_without_instance = ref.replace('#', '.').replace('..', '.')
             parts = ref_without_instance.rsplit('.', 1)
-            if len(parts) == 2:
-                model_path_with_instance, _ = parts
-                model_path = model_path_with_instance.split('.')[0]
-                field = ref.split('.')[-1]
-            else:
+            if len(parts) != 2:
                 return
+
+            model_path_with_instance, _ = parts
+            model_path = model_path_with_instance.split('.')[0]
+            field = ref.split('.')[-1]
         else:
             parts = ref.rsplit('.', 1)
             if len(parts) != 2:
@@ -372,14 +371,10 @@ class DynamicFieldGenerator:
             model_def = model_map[model_path]
             # Add field if props is empty or undefined
             if not model_def.props:
-                if model_path not in dynamic_fields:
-                    dynamic_fields[model_path] = set()
-                dynamic_fields[model_path].add(field)
+                dynamic_fields.setdefault(model_path, set()).add(field)
         else:
             # Model path doesn't exist - need to create child model
-            if model_path not in dynamic_fields:
-                dynamic_fields[model_path] = set()
-            dynamic_fields[model_path].add(field)
+            dynamic_fields.setdefault(model_path, set()).add(field)
 
     def _update_models_with_dynamic_fields(
         self,
@@ -395,22 +390,23 @@ class DynamicFieldGenerator:
         for model_path, fields in dynamic_fields.items():
             parts = model_path.split('.')
 
-            if model_path in model_map:
-                # Existing model - create new instance with updated props
-                model_def = model_map[model_path]
-                if not model_def.props:
-                    logging.info(f"モデル '{model_path}' はプロパティ未定義のため、lineage参照から動的生成します")
-                    # Create new ModelDefinition with updated props
-                    updated_model = ModelDefinition(
-                        name=model_def.name,
-                        type=model_def.type,
-                        props=tuple(sorted(fields)),
-                        children=model_def.children
-                    )
-                    model_map[model_path] = updated_model
-            else:
+            if model_path not in model_map:
                 # Need to create missing child models
                 self._create_missing_child_models(model_map, parts, fields)
+                continue
+
+            # Existing model - create new instance with updated props
+            model_def = model_map[model_path]
+            if not model_def.props:
+                logging.info(f"モデル '{model_path}' はプロパティ未定義のため、lineage参照から動的生成します")
+                # Create new ModelDefinition with updated props
+                updated_model = ModelDefinition(
+                    name=model_def.name,
+                    type=model_def.type,
+                    props=tuple(sorted(fields)),
+                    children=model_def.children
+                )
+                model_map[model_path] = updated_model
 
     def _create_missing_child_models(
         self,
@@ -932,16 +928,6 @@ class UsedFields:
         return model_path in self._fields
 
 
-# ============================================================================
-# Utility Layer - Conversion Helpers (Backward Compatibility Wrappers)
-# ============================================================================
-# これらの関数はドメインメソッドを呼び出すラッパーです。
-# 将来的にはこれらを削除し、ドメインメソッドを直接使用します。
-
-# ============================================================================
-# Legacy Functions (to be refactored in Phase 2)
-# ============================================================================
-
 # ============================================
 # Adapter Layer
 # ============================================
@@ -1450,11 +1436,14 @@ class ModelRepository:
 
             for csv_file in path.rglob("*.csv"):
                 model_def = self.csv_adapter.load_model(str(csv_file), 'program')
-                if model_def and model_def.name in required_models:
-                    if model_def.name in models_dict:
-                        logging.warning(f"Duplicate model '{model_def.name}' found in '{csv_file}'")
-                    else:
-                        models_dict[model_def.name] = model_def
+                if not model_def or model_def.name not in required_models:
+                    continue
+
+                if model_def.name in models_dict:
+                    logging.warning(f"Duplicate model '{model_def.name}' found in '{csv_file}'")
+                    continue
+
+                models_dict[model_def.name] = model_def
 
         # Search datastore model directories
         for dir_path in datastore_dirs:
@@ -1465,11 +1454,14 @@ class ModelRepository:
 
             for csv_file in path.rglob("*.csv"):
                 model_def = self.csv_adapter.load_model(str(csv_file), 'datastore')
-                if model_def and model_def.name in required_models:
-                    if model_def.name in models_dict:
-                        logging.warning(f"Duplicate model '{model_def.name}' found in '{csv_file}'")
-                    else:
-                        models_dict[model_def.name] = model_def
+                if not model_def or model_def.name not in required_models:
+                    continue
+
+                if model_def.name in models_dict:
+                    logging.warning(f"Duplicate model '{model_def.name}' found in '{csv_file}'")
+                    continue
+
+                models_dict[model_def.name] = model_def
 
         return Models(list(models_dict.values()))
 
@@ -1561,32 +1553,34 @@ class ExtractReferencedModelsUseCase:
             # from側
             for ref in entry.from_refs:
                 field_ref = FieldReference(ref)
-                if field_ref.model:
-                    model_names.add(field_ref.model)
-                    # インスタンス処理
-                    if field_ref.instance:
-                        if field_ref.model not in instances_dict:
-                            instances_dict[field_ref.model] = set()
-                        instances_dict[field_ref.model].add(field_ref.instance)
-                    else:
-                        # インスタンスなしでモデルが使われることをマーク
-                        if field_ref.model not in instances_dict:
-                            instances_dict[field_ref.model] = set()
+                if not field_ref.model:
+                    continue
+
+                model_names.add(field_ref.model)
+
+                # インスタンス辞書を初期化（setdefaultで簡潔に）
+                instances_set = instances_dict.setdefault(field_ref.model, set())
+
+                # インスタンスがあれば追加
+                if field_ref.instance:
+                    instances_set.add(field_ref.instance)
 
             # to側
-            if entry.to_ref:
-                field_ref = FieldReference(entry.to_ref)
-                if field_ref.model:
-                    model_names.add(field_ref.model)
-                    # インスタンス処理
-                    if field_ref.instance:
-                        if field_ref.model not in instances_dict:
-                            instances_dict[field_ref.model] = set()
-                        instances_dict[field_ref.model].add(field_ref.instance)
-                    else:
-                        # インスタンスなしでモデルが使われることをマーク
-                        if field_ref.model not in instances_dict:
-                            instances_dict[field_ref.model] = set()
+            if not entry.to_ref:
+                continue
+
+            field_ref = FieldReference(entry.to_ref)
+            if not field_ref.model:
+                continue
+
+            model_names.add(field_ref.model)
+
+            # インスタンス辞書を初期化（setdefaultで簡潔に）
+            instances_set = instances_dict.setdefault(field_ref.model, set())
+
+            # インスタンスがあれば追加
+            if field_ref.instance:
+                instances_set.add(field_ref.instance)
 
         # 使用フィールドを抽出（ドメインメソッドを使用）
         used_fields = lineage.extract_referenced_fields(yaml_models)
@@ -1699,8 +1693,7 @@ class GenerateMermaidDiagramUseCase:
                 # モデル参照チェック（フィールド参照より優先）
                 if src in parsed_data.model_types:
                     s_id = MermaidNode.sanitize_id(src.replace(".", "_").replace("#", "_"))
-                    if src not in model_ref_styles:
-                        model_ref_styles[src] = parsed_data.model_types[src]
+                    model_ref_styles.setdefault(src, parsed_data.model_types[src])
                 elif src in parsed_data.field_node_ids:
                     s_id = parsed_data.field_node_ids[src]
                 else:
