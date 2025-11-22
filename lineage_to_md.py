@@ -16,6 +16,10 @@ logging.basicConfig(
     stream=sys.stderr
 )
 
+# 定数
+YAML_EXTENSIONS = ('.yaml', '.yml')
+JSON_EXTENSION = '.json'
+
 # ============================================
 # Domain Layer
 # ============================================
@@ -144,7 +148,7 @@ class MermaidNode:
         if not s:
             s = "id"
         # 数字で始まる場合は "n_" を付加
-        if re.match(r"^[0-9]", s):
+        if re.match(r"^\d", s):
             s = "n_" + s
         return s
 
@@ -721,9 +725,8 @@ class ModelParser:
 
         for p in props:
             # Apply filtering if applicable
-            if should_filter:
-                if not self._is_field_used(instance_path, p):
-                    continue
+            if should_filter and not self._is_field_used(instance_path, p):
+                continue
 
             # Generate node ID
             nid = MermaidNode.sanitize_id(
@@ -793,6 +796,47 @@ class LineageEntries:
             ))
         return LineageEntries(entries)
 
+    @staticmethod
+    def _collect_model_names(models: List[ModelDefinition], prefix: str = "") -> Set[str]:
+        """Recursively collect all model names including nested ones."""
+        names = set()
+        for m in models:
+            model_path = f"{prefix}.{m.name}" if prefix else m.name
+            names.add(model_path)
+            if m.children:
+                names.update(LineageEntries._collect_model_names(m.children, model_path))
+        return names
+
+    @staticmethod
+    def _add_field_to_dict(ref: str, fields_dict: Dict[str, Set[str]]) -> None:
+        """Add a field reference to the fields_dict.
+
+        Args:
+            ref: Reference string (can be 'Model', 'Model#instance', 'Model.field', 'Model#instance.field')
+            fields_dict: Dictionary to update with field information
+        """
+        # Use FieldReference to parse
+        field_ref = FieldReference(ref)
+        model = field_ref.model
+        instance = field_ref.instance
+        field = field_ref.field
+
+        # Build the tracking key (model path with optional instance)
+        tracking_key = f"{model}#{instance}" if instance else model
+
+        # Check if it's a model-level reference (no field specified)
+        if field is None:
+            # Model-level reference: mark all fields in this model/instance as used
+            fields_dict[tracking_key] = {'*'}
+            return
+
+        # It's a field reference - add to fields_dict
+        if tracking_key not in fields_dict:
+            fields_dict[tracking_key] = set()
+        # '*'がすでにある場合は追加しない
+        if '*' not in fields_dict[tracking_key]:
+            fields_dict[tracking_key].add(field)
+
     def extract_referenced_fields(self, yaml_models: Models) -> 'UsedFields':
         """Extract all fields referenced in lineage definitions.
 
@@ -822,69 +866,22 @@ class LineageEntries:
 
         # Build a set of all defined model names (including nested ones) from YAML
         # to distinguish model references from field references
-        def collect_model_names(models: List[ModelDefinition], prefix: str = "") -> Set[str]:
-            """Recursively collect all model names including nested ones."""
-            names = set()
-            for m in models:
-                model_path = f"{prefix}.{m.name}" if prefix else m.name
-                names.add(model_path)
-                if m.children:
-                    names.update(collect_model_names(m.children, model_path))
-            return names
-
-        known_models = collect_model_names(yaml_models.to_list())
-
-        def add_field(ref: str) -> None:
-            """Add a field reference to the fields_dict.
-
-            Args:
-                ref: Reference string (can be 'Model', 'Model#instance', 'Model.field', 'Model#instance.field')
-            """
-            # Use FieldReference to parse
-            field_ref = FieldReference(ref)
-            model = field_ref.model
-            instance = field_ref.instance
-            field = field_ref.field
-
-            # Build the tracking key (model path with optional instance)
-            if instance:
-                tracking_key = f"{model}#{instance}"
-            else:
-                tracking_key = model
-
-            # Check if it's a model-level reference (no field specified)
-            if field is None:
-                # Model-level reference: mark all fields in this model/instance as used
-                fields_dict[tracking_key] = {'*'}
-                return
-
-            # It's a field reference - add to fields_dict
-            if tracking_key not in fields_dict:
-                fields_dict[tracking_key] = set()
-            # '*'がすでにある場合は追加しない
-            if '*' not in fields_dict[tracking_key]:
-                fields_dict[tracking_key].add(field)
+        known_models = self._collect_model_names(yaml_models.to_list())
 
         # Process all lineage entries
         for entry in self._entries:
             # Process 'from' field (already normalized as List[str] in LineageEntry)
             for ref in entry.from_refs:
                 field_ref = FieldReference(ref)
-                model = field_ref.model
-                instance = field_ref.instance
-                field = field_ref.field
                 # Skip literal values (no model or field, and not in known models)
-                if model and (field is not None or model in known_models or instance is not None):
-                    add_field(ref)
+                if field_ref.model and (field_ref.field is not None or field_ref.model in known_models or field_ref.instance is not None):
+                    self._add_field_to_dict(ref, fields_dict)
 
             # Process 'to' field
             if entry.to_ref:
                 field_ref = FieldReference(entry.to_ref)
-                model = field_ref.model
-                instance = field_ref.instance
-                field = field_ref.field
-                if model and (field is not None or model in known_models or instance is not None):
-                    add_field(entry.to_ref)
+                if field_ref.model and (field_ref.field is not None or field_ref.model in known_models or field_ref.instance is not None):
+                    self._add_field_to_dict(entry.to_ref, fields_dict)
 
         return UsedFields(fields_dict)
 
@@ -1027,9 +1024,9 @@ class OpenAPIAdapter:
 
             # Load spec file (YAML or JSON)
             with open(path, 'r', encoding='utf-8') as f:
-                if path.suffix.lower() in ['.yaml', '.yml']:
+                if path.suffix.lower() in YAML_EXTENSIONS:
                     spec = yaml.safe_load(f)
-                elif path.suffix.lower() == '.json':
+                elif path.suffix.lower() == JSON_EXTENSION:
                     spec = json.load(f)
                 else:
                     logging.error(f"Unsupported file format '{path.suffix}' (expected .yaml, .yml, or .json)")
@@ -1081,6 +1078,176 @@ class OpenAPIAdapter:
 class AsyncAPIAdapter:
     """AsyncAPI仕様からモデル定義を読み込むアダプター"""
 
+    @staticmethod
+    def _load_spec_file(spec_path: str) -> Optional[dict]:
+        """Load AsyncAPI spec file (YAML or JSON).
+
+        Args:
+            spec_path: Path to the AsyncAPI spec file
+
+        Returns:
+            Loaded spec as dict, or None if failed
+        """
+        try:
+            path = Path(spec_path)
+            if not path.exists():
+                logging.error(f"AsyncAPI spec file '{spec_path}' does not exist")
+                return None
+
+            with open(path, 'r', encoding='utf-8') as f:
+                if path.suffix.lower() in YAML_EXTENSIONS:
+                    return yaml.safe_load(f)
+                elif path.suffix.lower() == JSON_EXTENSION:
+                    return json.load(f)
+                else:
+                    logging.error(f"Unsupported file format '{path.suffix}' (expected .yaml, .yml, or .json)")
+                    return None
+        except Exception as e:
+            logging.error(f"Failed to load AsyncAPI spec '{spec_path}': {e}")
+            return None
+
+    @staticmethod
+    def _validate_ref_path(ref_path: str, visited: set) -> Optional[str]:
+        """Validate $ref path and return schema name if valid.
+
+        Args:
+            ref_path: The $ref path to validate
+            visited: Set of visited paths for cycle detection
+
+        Returns:
+            Schema name if valid, None otherwise
+        """
+        # Cycle detection
+        if ref_path in visited:
+            logging.warning(f"Circular reference detected: {ref_path}")
+            return None
+        visited.add(ref_path)
+
+        # External references (http/https)
+        if ref_path.startswith('http://') or ref_path.startswith('https://'):
+            logging.warning(f"External reference '{ref_path}' is not supported")
+            return None
+
+        # Only handle internal references
+        if not ref_path.startswith('#/components/schemas/'):
+            logging.warning(f"Unsupported $ref format '{ref_path}' (expected '#/components/schemas/...')")
+            return None
+
+        return ref_path.split('/')[-1]
+
+    @staticmethod
+    def _process_property_def(prop_name: str, prop_def: Any, schemas: dict, spec_path: str, visited: set) -> List[str]:
+        """Process a single property definition and resolve $refs.
+
+        Args:
+            prop_name: Property name
+            prop_def: Property definition
+            schemas: All schemas for resolving $refs
+            spec_path: Original spec path
+            visited: Set of visited refs
+
+        Returns:
+            List of property names (may be flattened with dot notation)
+        """
+        if isinstance(prop_def, dict) and '$ref' in prop_def:
+            # Nested $ref: resolve recursively and flatten
+            nested_props = AsyncAPIAdapter._resolve_ref(prop_def['$ref'], schemas, spec_path, visited)
+            return [f"{prop_name}.{p}" for p in nested_props] if nested_props else [prop_name]
+        return [prop_name]
+
+    @staticmethod
+    def _extract_schema_props(schema: dict, schemas: dict, spec_path: str, visited: set) -> List[str]:
+        """Extract properties from a schema, resolving nested $refs.
+
+        Args:
+            schema: The schema dict to extract from
+            schemas: All schemas for resolving $refs
+            spec_path: Original spec path (for error messages)
+            visited: Set of visited refs
+
+        Returns:
+            List of property names
+        """
+        props = []
+
+        # Extract direct properties
+        if 'properties' in schema:
+            for prop_name, prop_def in schema['properties'].items():
+                props.extend(AsyncAPIAdapter._process_property_def(prop_name, prop_def, schemas, spec_path, visited))
+
+        # Handle allOf
+        if 'allOf' in schema:
+            for item in schema['allOf']:
+                if 'properties' in item:
+                    props.extend(item['properties'].keys())
+                if '$ref' in item:
+                    props.extend(AsyncAPIAdapter._resolve_ref(item['$ref'], schemas, spec_path, visited))
+
+        return props
+
+    @staticmethod
+    def _resolve_ref(ref_path: str, schemas: dict, spec_path: str, visited: Optional[set] = None) -> List[str]:
+        """Recursively resolve $ref and extract properties.
+
+        Args:
+            ref_path: The $ref path (e.g., "#/components/schemas/EventMetadata")
+            schemas: The schemas dictionary from components/schemas
+            spec_path: Original spec file path (for error messages)
+            visited: Set of already visited refs to detect cycles
+
+        Returns:
+            List of property names from the referenced schema
+        """
+        if visited is None:
+            visited = set()
+
+        # Validate ref path
+        ref_schema_name = AsyncAPIAdapter._validate_ref_path(ref_path, visited)
+        if not ref_schema_name:
+            return []
+
+        # Schema existence check
+        if ref_schema_name not in schemas:
+            logging.warning(f"Referenced schema '{ref_schema_name}' not found in AsyncAPI spec '{spec_path}'")
+            return []
+
+        # Extract properties
+        ref_schema = schemas[ref_schema_name]
+        props = AsyncAPIAdapter._extract_schema_props(ref_schema, schemas, spec_path, visited)
+
+        if not props:
+            logging.info(f"Referenced schema '{ref_schema_name}' has no properties")
+
+        # Remove duplicates while preserving order
+        return list(dict.fromkeys(props))
+
+    @staticmethod
+    def _extract_properties(schema: dict, schema_name: str, schemas: dict, spec_path: str) -> List[str]:
+        """Extract properties from a schema, resolving $ref if needed.
+
+        Args:
+            schema: The schema dict to extract properties from
+            schema_name: Name of the schema (for error messages)
+            schemas: All schemas from components/schemas
+            spec_path: Original spec file path (for error messages)
+
+        Returns:
+            List of property names
+        """
+        # Initialize visited set with current schema to detect circular references
+        current_schema_ref = f"#/components/schemas/{schema_name}"
+        visited = {current_schema_ref}
+
+        # Use the common extraction method
+        props = AsyncAPIAdapter._extract_schema_props(schema, schemas, spec_path, visited)
+
+        if not props:
+            logging.warning(f"No properties found in schema '{schema_name}' in '{spec_path}'")
+            return []
+
+        # Remove duplicates while preserving order
+        return list(dict.fromkeys(props))
+
     def load_model(self, spec_path: str, schema_name: str, model_type: str) -> Optional[ModelDefinition]:
         """AsyncAPI仕様から単一モデルをロード
 
@@ -1097,20 +1264,10 @@ class AsyncAPIAdapter:
             ModelDefinitionまたはNone
         """
         try:
-            path = Path(spec_path)
-            if not path.exists():
-                logging.error(f"AsyncAPI spec file '{spec_path}' does not exist")
+            # Load spec file
+            spec = self._load_spec_file(spec_path)
+            if not spec:
                 return None
-
-            # Load spec file (YAML or JSON)
-            with open(path, 'r', encoding='utf-8') as f:
-                if path.suffix.lower() in ['.yaml', '.yml']:
-                    spec = yaml.safe_load(f)
-                elif path.suffix.lower() == '.json':
-                    spec = json.load(f)
-                else:
-                    logging.error(f"Unsupported file format '{path.suffix}' (expected .yaml, .yml, or .json)")
-                    return None
 
             # Navigate to components/schemas
             if 'components' not in spec:
@@ -1124,103 +1281,10 @@ class AsyncAPIAdapter:
 
             schema = schemas[schema_name]
 
-            # Helper function to resolve $ref recursively
-            def resolve_ref(ref_path: str, visited: Optional[set] = None) -> List[str]:
-                """Recursively resolve $ref and extract properties.
-
-                Args:
-                    ref_path: The $ref path (e.g., "#/components/schemas/EventMetadata")
-                    visited: Set of already visited refs to detect cycles
-
-                Returns:
-                    List of property names from the referenced schema
-                """
-                if visited is None:
-                    visited = set()
-
-                # Cycle detection
-                if ref_path in visited:
-                    logging.warning(f"Circular reference detected: {ref_path}")
-                    return []
-                visited.add(ref_path)
-
-                # External references (http/https)
-                if ref_path.startswith('http://') or ref_path.startswith('https://'):
-                    logging.warning(f"External reference '{ref_path}' in schema '{schema_name}' is not supported")
-                    return []
-
-                # Only handle internal references
-                if not ref_path.startswith('#/components/schemas/'):
-                    logging.warning(f"Unsupported $ref format '{ref_path}' in schema '{schema_name}' "
-                          f"(expected '#/components/schemas/...')")
-                    return []
-
-                ref_schema_name = ref_path.split('/')[-1]
-
-                # Schema existence check
-                if ref_schema_name not in schemas:
-                    logging.warning(f"Referenced schema '{ref_schema_name}' not found in AsyncAPI spec '{spec_path}'")
-                    return []
-
-                ref_schema = schemas[ref_schema_name]
-                props = []
-
-                # Extract direct properties
-                if 'properties' in ref_schema:
-                    for prop_name, prop_def in ref_schema['properties'].items():
-                        if isinstance(prop_def, dict) and '$ref' in prop_def:
-                            # Nested $ref: resolve recursively and flatten
-                            nested_props = resolve_ref(prop_def['$ref'], visited)
-                            # Flatten nested properties with dot notation
-                            props.extend([f"{prop_name}.{p}" for p in nested_props] if nested_props else [prop_name])
-                        else:
-                            props.append(prop_name)
-
-                # Handle allOf
-                if 'allOf' in ref_schema:
-                    for item in ref_schema['allOf']:
-                        if 'properties' in item:
-                            props.extend(item['properties'].keys())
-                        if '$ref' in item:
-                            props.extend(resolve_ref(item['$ref'], visited))
-
-                if not props:
-                    logging.info(f"Referenced schema '{ref_schema_name}' has no properties")
-
-                # Remove duplicates while preserving order
-                return list(dict.fromkeys(props))
-
-            # Extract properties
-            props = []
-            # Initialize visited set with current schema to detect circular references
-            current_schema_ref = f"#/components/schemas/{schema_name}"
-            visited = {current_schema_ref}
-
-            if 'properties' in schema:
-                for prop_name, prop_def in schema['properties'].items():
-                    if isinstance(prop_def, dict) and '$ref' in prop_def:
-                        # Handle $ref in properties
-                        nested_props = resolve_ref(prop_def['$ref'], visited)
-                        # Flatten nested properties with dot notation
-                        props.extend([f"{prop_name}.{p}" for p in nested_props] if nested_props else [prop_name])
-                    else:
-                        props.append(prop_name)
-
-            # Handle allOf (merge properties from referenced schemas)
-            if 'allOf' in schema:
-                for item in schema['allOf']:
-                    if 'properties' in item:
-                        props.extend(item['properties'].keys())
-                    # Handle $ref in allOf with improved error handling
-                    if '$ref' in item:
-                        props.extend(resolve_ref(item['$ref'], visited))
-
+            # Extract properties using helper method
+            props = self._extract_properties(schema, schema_name, schemas, spec_path)
             if not props:
-                logging.warning(f"No properties found in schema '{schema_name}' in '{spec_path}'")
                 return None
-
-            # Remove duplicates while preserving order
-            props = list(dict.fromkeys(props))
 
             return ModelDefinition(
                 name=schema_name,
@@ -1339,129 +1403,117 @@ class ModelRepository:
         models = Models.merge(models_list) if models_list else Models([])
         return models, csv_model_names
 
-    def _find_from_openapi(self, spec_files: List[str], required_models: Set[str]) -> Models:
-        """OpenAPI仕様からモデルを検索"""
+    def _load_and_extract_schemas(self, spec_path: str, spec_type: str) -> Optional[dict]:
+        """Load spec file and extract schemas section.
+
+        Args:
+            spec_path: Path to spec file
+            spec_type: Type of spec ('OpenAPI' or 'AsyncAPI') for error messages
+
+        Returns:
+            Schemas dict, or None if failed
+        """
+        path = Path(spec_path)
+        if not path.exists():
+            logging.warning(f"{spec_type} spec file '{spec_path}' does not exist")
+            return None
+
+        try:
+            # Load spec file
+            with open(path, 'r', encoding='utf-8') as f:
+                if path.suffix.lower() in YAML_EXTENSIONS:
+                    spec = yaml.safe_load(f)
+                elif path.suffix.lower() == JSON_EXTENSION:
+                    spec = json.load(f)
+                else:
+                    logging.warning(f"Unsupported file format '{path.suffix}'")
+                    return None
+
+            # Get all schemas
+            if 'components' not in spec or 'schemas' not in spec['components']:
+                return None
+
+            return spec['components']['schemas']
+
+        except Exception as e:
+            logging.error(f"Processing {spec_type} spec '{spec_path}': {e}")
+            return None
+
+    def _find_from_spec_files(self, spec_files: List[str], required_models: Set[str],
+                              adapter: Any, spec_type: str) -> Models:
+        """Common logic for finding models from spec files.
+
+        Args:
+            spec_files: List of spec file paths
+            required_models: Set of required model names
+            adapter: The adapter to use (openapi_adapter or asyncapi_adapter)
+            spec_type: Type of spec for logging ('OpenAPI' or 'AsyncAPI')
+
+        Returns:
+            Models collection
+        """
         models_list = []
         found_models = set()
 
         for spec_path in spec_files:
-            path = Path(spec_path)
-            if not path.exists():
-                logging.warning(f"OpenAPI spec file '{spec_path}' does not exist")
+            schemas = self._load_and_extract_schemas(spec_path, spec_type)
+            if not schemas:
                 continue
 
-            try:
-                # Load spec file
-                with open(path, 'r', encoding='utf-8') as f:
-                    if path.suffix.lower() in ['.yaml', '.yml']:
-                        spec = yaml.safe_load(f)
-                    elif path.suffix.lower() == '.json':
-                        spec = json.load(f)
-                    else:
-                        logging.warning(f"Unsupported file format '{path.suffix}'")
-                        continue
-
-                # Get all schemas
-                if 'components' not in spec or 'schemas' not in spec['components']:
-                    continue
-
-                schemas = spec['components']['schemas']
-
-                # Load required models
-                for model_name in required_models:
-                    if model_name in schemas and model_name not in found_models:
-                        model_def = self.openapi_adapter.load_model(spec_path, model_name, 'program')
-                        if model_def:
-                            models_list.append(model_def)
-                            found_models.add(model_name)
-
-            except Exception as e:
-                logging.error(f"Processing OpenAPI spec '{spec_path}': {e}")
-                continue
+            # Load required models
+            for model_name in required_models:
+                if model_name in schemas and model_name not in found_models:
+                    model_def = adapter.load_model(spec_path, model_name, 'program')
+                    if model_def:
+                        models_list.append(model_def)
+                        found_models.add(model_name)
 
         return Models(models_list)
+
+    def _find_from_openapi(self, spec_files: List[str], required_models: Set[str]) -> Models:
+        """OpenAPI仕様からモデルを検索"""
+        return self._find_from_spec_files(spec_files, required_models, self.openapi_adapter, 'OpenAPI')
 
     def _find_from_asyncapi(self, spec_files: List[str], required_models: Set[str]) -> Models:
         """AsyncAPI仕様からモデルを検索"""
-        models_list = []
-        found_models = set()
+        return self._find_from_spec_files(spec_files, required_models, self.asyncapi_adapter, 'AsyncAPI')
 
-        for spec_path in spec_files:
-            path = Path(spec_path)
+    def _search_csv_models_in_dirs(self, dirs: List[str], model_type: str,
+                                    required_models: Set[str], models_dict: Dict[str, ModelDefinition]) -> None:
+        """Search CSV models in directories and populate models_dict.
+
+        Args:
+            dirs: List of directory paths to search
+            model_type: Model type ('program' or 'datastore')
+            required_models: Set of required model names
+            models_dict: Dictionary to populate with found models
+        """
+        for dir_path in dirs:
+            path = Path(dir_path)
             if not path.exists():
-                logging.warning(f"AsyncAPI spec file '{spec_path}' does not exist")
+                logging.warning(f"{model_type.capitalize()} model directory '{dir_path}' does not exist")
                 continue
 
-            try:
-                # Load spec file
-                with open(path, 'r', encoding='utf-8') as f:
-                    if path.suffix.lower() in ['.yaml', '.yml']:
-                        spec = yaml.safe_load(f)
-                    elif path.suffix.lower() == '.json':
-                        spec = json.load(f)
-                    else:
-                        logging.warning(f"Unsupported file format '{path.suffix}'")
-                        continue
-
-                # Get all schemas from components/schemas (AsyncAPI 3.0)
-                if 'components' not in spec or 'schemas' not in spec['components']:
+            for csv_file in path.rglob("*.csv"):
+                model_def = self.csv_adapter.load_model(str(csv_file), model_type)
+                if not model_def or model_def.name not in required_models:
                     continue
 
-                schemas = spec['components']['schemas']
+                if model_def.name in models_dict:
+                    logging.warning(f"Duplicate model '{model_def.name}' found in '{csv_file}'")
+                    continue
 
-                # Load required models
-                for model_name in required_models:
-                    if model_name in schemas and model_name not in found_models:
-                        model_def = self.asyncapi_adapter.load_model(spec_path, model_name, 'program')
-                        if model_def:
-                            models_list.append(model_def)
-                            found_models.add(model_name)
-
-            except Exception as e:
-                logging.error(f"Processing AsyncAPI spec '{spec_path}': {e}")
-                continue
-
-        return Models(models_list)
+                models_dict[model_def.name] = model_def
 
     def _find_from_csv(self, program_dirs: List[str], datastore_dirs: List[str], required_models: Set[str]) -> Models:
         """CSVファイルからモデルを検索"""
-        models_dict = {}
+        models_dict: Dict[str, ModelDefinition] = {}
 
         # Search program model directories
-        for dir_path in program_dirs:
-            path = Path(dir_path)
-            if not path.exists():
-                logging.warning(f"Program model directory '{dir_path}' does not exist")
-                continue
-
-            for csv_file in path.rglob("*.csv"):
-                model_def = self.csv_adapter.load_model(str(csv_file), 'program')
-                if not model_def or model_def.name not in required_models:
-                    continue
-
-                if model_def.name in models_dict:
-                    logging.warning(f"Duplicate model '{model_def.name}' found in '{csv_file}'")
-                    continue
-
-                models_dict[model_def.name] = model_def
+        self._search_csv_models_in_dirs(program_dirs, 'program', required_models, models_dict)
 
         # Search datastore model directories
-        for dir_path in datastore_dirs:
-            path = Path(dir_path)
-            if not path.exists():
-                logging.warning(f"Datastore model directory '{dir_path}' does not exist")
-                continue
-
-            for csv_file in path.rglob("*.csv"):
-                model_def = self.csv_adapter.load_model(str(csv_file), 'datastore')
-                if not model_def or model_def.name not in required_models:
-                    continue
-
-                if model_def.name in models_dict:
-                    logging.warning(f"Duplicate model '{model_def.name}' found in '{csv_file}'")
-                    continue
-
-                models_dict[model_def.name] = model_def
+        self._search_csv_models_in_dirs(datastore_dirs, 'datastore', required_models, models_dict)
 
         return Models(list(models_dict.values()))
 
@@ -1642,6 +1694,100 @@ class ParseModelsUseCase:
 class GenerateMermaidDiagramUseCase:
     """Mermaid図の生成UseCase（ステートレス）"""
 
+    @staticmethod
+    def _generate_subgraphs(parsed_data: ParsedModelsData) -> List[str]:
+        """サブグラフ行を生成
+
+        Args:
+            parsed_data: パース済みモデルデータ
+
+        Returns:
+            サブグラフのMermaid行のリスト
+        """
+        lines = []
+        for model_path in sorted(parsed_data.model_hierarchy.keys()):
+            if parsed_data.model_hierarchy[model_path]['parent'] is None:
+                subgraph_lines = parsed_data.generate_subgraph(model_path)
+                lines.extend(subgraph_lines)
+                lines.append("")
+        return lines
+
+    @staticmethod
+    def _resolve_target_node(to_ref: str, parsed_data: ParsedModelsData, model_ref_styles: Dict[str, str]) -> Optional[str]:
+        """ターゲットノードIDを解決
+
+        Args:
+            to_ref: ターゲット参照文字列
+            parsed_data: パース済みモデルデータ
+            model_ref_styles: モデル参照スタイルを蓄積する辞書
+
+        Returns:
+            ノードID、または解決できない場合はNone
+        """
+        if to_ref in parsed_data.field_node_ids:
+            return parsed_data.field_node_ids[to_ref]
+
+        if to_ref in parsed_data.model_types:
+            node_id = MermaidNode.sanitize_id(to_ref.replace(".", "_").replace("#", "_"))
+            if to_ref not in model_ref_styles:
+                model_ref_styles[to_ref] = parsed_data.model_types[to_ref]
+            return node_id
+
+        logging.warning(f"Unknown reference '{to_ref}' in lineage")
+        return None
+
+    def _resolve_source_node(self, src: str, parsed_data: ParsedModelsData,
+                            model_ref_styles: Dict[str, str], literal_counter: int,
+                            lines: List[str]) -> Tuple[Optional[str], int]:
+        """ソースノードIDを解決（リテラルノード生成を含む）
+
+        Args:
+            src: ソース参照文字列
+            parsed_data: パース済みモデルデータ
+            model_ref_styles: モデル参照スタイルを蓄積する辞書
+            literal_counter: 現在のリテラルカウンター
+            lines: Mermaid行のリスト（リテラルノードを追加）
+
+        Returns:
+            (ノードID, 更新後のliteral_counter)のタプル
+        """
+        # モデル参照チェック（フィールド参照より優先）
+        if src in parsed_data.model_types:
+            node_id = MermaidNode.sanitize_id(src.replace(".", "_").replace("#", "_"))
+            model_ref_styles.setdefault(src, parsed_data.model_types[src])
+            return node_id, literal_counter
+
+        if src in parsed_data.field_node_ids:
+            return parsed_data.field_node_ids[src], literal_counter
+
+        # リテラル値
+        literal_counter += 1
+        node_id, literal_line = self._create_literal_node(src, literal_counter)
+        lines.append(literal_line)
+        return node_id, literal_counter
+
+    @staticmethod
+    def _generate_model_ref_styles(model_ref_styles: Dict[str, str]) -> List[str]:
+        """モデル参照のスタイル行を生成
+
+        Args:
+            model_ref_styles: モデル参照とタイプのマッピング
+
+        Returns:
+            スタイル行のリスト
+        """
+        if not model_ref_styles:
+            return []
+
+        lines = [""]
+        for model_ref, model_type in model_ref_styles.items():
+            node_id = MermaidNode.sanitize_id(model_ref.replace(".", "_").replace("#", "_"))
+            if model_type == "program":
+                lines.append(f'  style {node_id} fill:#E3F2FD,stroke:#1565C0,stroke-width:2px')
+            else:  # datastore
+                lines.append(f'  style {node_id} fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px')
+        return lines
+
     def execute(self, parsed_data: ParsedModelsData, lineage: LineageEntries) -> str:
         """Mermaid図の文字列を生成
 
@@ -1663,44 +1809,26 @@ class GenerateMermaidDiagramUseCase:
         ]
 
         # サブグラフ生成
-        for model_path in sorted(parsed_data.model_hierarchy.keys()):
-            if parsed_data.model_hierarchy[model_path]['parent'] is None:
-                subgraph_lines = parsed_data.generate_subgraph(model_path)
-                lines.extend(subgraph_lines)
-                lines.append("")
+        lines.extend(self._generate_subgraphs(parsed_data))
 
         # リネージエッジ生成
         model_ref_styles = {}
-        literal_counter = 0  # ローカル変数としてカウンターを初期化
+        literal_counter = 0
 
         for entry in lineage:
             if not entry.to_ref:
                 continue
 
-            # ターゲット決定
-            if entry.to_ref in parsed_data.field_node_ids:
-                t_id = parsed_data.field_node_ids[entry.to_ref]
-            elif entry.to_ref in parsed_data.model_types:
-                t_id = MermaidNode.sanitize_id(entry.to_ref.replace(".", "_").replace("#", "_"))
-                if entry.to_ref not in model_ref_styles:
-                    model_ref_styles[entry.to_ref] = parsed_data.model_types[entry.to_ref]
-            else:
-                logging.warning(f"Unknown reference '{entry.to_ref}' in lineage")
+            # ターゲット解決
+            t_id = self._resolve_target_node(entry.to_ref, parsed_data, model_ref_styles)
+            if not t_id:
                 continue
 
             # ソース処理
             for i, src in enumerate(entry.from_refs):
-                # モデル参照チェック（フィールド参照より優先）
-                if src in parsed_data.model_types:
-                    s_id = MermaidNode.sanitize_id(src.replace(".", "_").replace("#", "_"))
-                    model_ref_styles.setdefault(src, parsed_data.model_types[src])
-                elif src in parsed_data.field_node_ids:
-                    s_id = parsed_data.field_node_ids[src]
-                else:
-                    # リテラル値
-                    literal_counter += 1
-                    s_id, literal_line = self._create_literal_node(src, literal_counter)
-                    lines.append(literal_line)
+                s_id, literal_counter = self._resolve_source_node(
+                    src, parsed_data, model_ref_styles, literal_counter, lines
+                )
 
                 # エッジ追加
                 label = entry.transform if i == 0 and entry.transform else ""
@@ -1710,14 +1838,7 @@ class GenerateMermaidDiagramUseCase:
                     lines.append(f'  {s_id} --> {t_id}')
 
         # モデル参照のスタイル追加
-        if model_ref_styles:
-            lines.append("")
-            for model_ref, model_type in model_ref_styles.items():
-                node_id = MermaidNode.sanitize_id(model_ref.replace(".", "_").replace("#", "_"))
-                if model_type == "program":
-                    lines.append(f'  style {node_id} fill:#E3F2FD,stroke:#1565C0,stroke-width:2px')
-                else:  # datastore
-                    lines.append(f'  style {node_id} fill:#E8F5E9,stroke:#2E7D32,stroke-width:2px')
+        lines.extend(self._generate_model_ref_styles(model_ref_styles))
 
         lines.append("```")
         return "\n".join(lines)
