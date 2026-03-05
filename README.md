@@ -205,6 +205,46 @@ python lineage_to_md.py data/dynamic-fields.yml data/output/dynamic-fields.md
 python lineage_to_md.py data/etl-pipeline.yml data/output/etl-pipeline.md
 ```
 
+#### 4. Claude Code Agent Skills
+
+[Claude Code](https://claude.com/claude-code) を使って、lineage定義の作成・実装コード生成・逆引きを支援するエージェントスキルを提供しています。
+
+##### インストール
+
+```bash
+git clone https://github.com/suwa-sh/lineage-to-graph.git
+cd lineage-to-graph
+
+# グローバルにインストール（全プロジェクトで利用可能）
+bash scripts/install-skills.sh --global
+
+# プロジェクトローカルにインストール
+bash scripts/install-skills.sh --local /path/to/my-project
+```
+
+##### スキル一覧
+
+| スキル | トリガー例 | 説明 |
+| --- | --- | --- |
+| **lineage-create** | 「lineage定義を作成」 | データモデル定義やエントリーポイントからlineage YAMLを生成 |
+| **lineage-to-code** | 「lineageから実装」 | lineage定義を読み取り、プロジェクトに合わせたマッピングコードを生成 |
+| **code-to-lineage** | 「コードからlineage」 | 実装コードのコールスタックを追跡してlineage定義を逆引き生成 |
+
+※ `lineage-core` は共有リソース（スキーマ仕様、YAMLパターン集、変換スクリプト）を提供する内部スキルです。
+※ 依存パッケージのインストールは `install-skills.sh` 実行時に自動で行われます。
+
+##### スキル構成
+
+```txt
+.claude/skills/
+├── lineage-core/          # 共有リソース（変換スクリプト、リファレンス）
+│   ├── scripts/           #   lineage_to_md.py, requirements.txt
+│   └── references/        #   schema-spec.md, yaml-patterns.md, lineage-reading-guide.md
+├── lineage-create/        # lineage定義の新規作成
+├── lineage-to-code/       # lineage → 実装コード生成
+└── code-to-lineage/       # 実装 → lineage定義の逆引き
+```
+
 ### 詳細機能
 
 #### リテラル値の扱い
